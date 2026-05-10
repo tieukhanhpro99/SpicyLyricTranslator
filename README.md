@@ -8,8 +8,8 @@ Real-time lyric translation extension for [Spicy Lyrics](https://github.com/Spik
 ![License](https://img.shields.io/badge/License-Source%20Available-blue?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-Online-success?style=flat-square)
 
-![Preview](https://raw.githubusercontent.com/7xeh/SpicyLyricTranslate/main/preview.png)
-![Preview2](https://github.com/7xeh/SpicyLyricTranslate/blob/main/slt_preview.gif?raw=true)
+![Preview](https://github.com/7xeh/SpicyLyricTranslate/blob/main/slt_preview.gif?raw=true)
+![Preview2](https://github.com/7xeh/SpicyLyricTranslate/blob/main/preview.png?raw=true)
 
 ## Need Help or Want to Chat?
 
