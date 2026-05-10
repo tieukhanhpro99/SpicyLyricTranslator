@@ -9,6 +9,7 @@ Real-time lyric translation extension for [Spicy Lyrics](https://github.com/Spik
 ![Status](https://img.shields.io/badge/Status-Online-success?style=flat-square)
 
 ![Preview](https://raw.githubusercontent.com/7xeh/SpicyLyricTranslate/main/preview.png)
+![Preview2](https://github.com/7xeh/SpicyLyricTranslate/blob/main/slt_preview.gif?raw=true)
 
 ## Need Help or Want to Chat?
 
