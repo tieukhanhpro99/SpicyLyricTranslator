@@ -167,8 +167,7 @@
                 if (
                     typeof Spicetify !== 'undefined' &&
                     Spicetify.Platform &&
-                    Spicetify.Player &&
-                    Spicetify.Player.data
+                    Spicetify.Player
                 ) {
                     log.debug('Spicetify is ready');
                     resolve();
