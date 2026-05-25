@@ -5991,20 +5991,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
 #SpicyLyricsPage.ForcedCompactMode .LyricsContainer::before,
 #SpicyLyricsPage.ForcedCompactMode .LyricsContainer::after,
 #SpicyLyricsPage.ForcedCompactMode .simplebar-content::before,
-#SpicyLyricsPage.ForcedCompactMode .simplebar-content::after,
-#SpicyLyricsPage.CompactMode .LyricsContainer::before,
-#SpicyLyricsPage.CompactMode .LyricsContainer::after,
-#SpicyLyricsPage.CompactMode .simplebar-content::before,
-#SpicyLyricsPage.CompactMode .simplebar-content::after {
+#SpicyLyricsPage.ForcedCompactMode .simplebar-content::after {
     min-height: 100% !important;
-}
-
-/* Fix SpicyThemes background overlay position shifting in Compact Mode */
-#SpicyLyricsPage.CompactMode .ContentBox .LyricsContainer,
-#SpicyLyricsPage.ForcedCompactMode .ContentBox .LyricsContainer,
-.Cinema--Container .ContentBox .LyricsContainer {
-    margin-top: 0 !important;
-    padding-top: 21cqh !important;
 }
 `;
   function injectStyles() {
