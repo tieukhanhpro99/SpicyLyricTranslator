@@ -26,8 +26,8 @@ class MusixmatchLyricsRepository: LyricsRepository {
 
     private let lyricsCache = NSCache<NSString, CachedLyrics>()
 
-    private func getCacheKey(for query: LyricsSearchQuery) -> String {
-        return "\(query.hashValue)_\(selectedLanguage)"
+    private func getCacheKey(for query: LyricsSearchQuery, options: LyricsOptions) -> String {
+        return "\(query.hashValue)_\(selectedLanguage)_romanized_\(options.romanization)"
     }
 
     //
@@ -132,15 +132,21 @@ class MusixmatchLyricsRepository: LyricsRepository {
         }
 
         return translations.reduce(into: [:]) { dictionary, translation in
-            dictionary[translation["subtitle_matched_line"] as! String] =
-                translation["description"] as? String
+            guard
+                let matchedLine = translation["subtitle_matched_line"] as? String,
+                let description = translation["description"] as? String
+            else {
+                return
+            }
+
+            dictionary[matchedLine] = description
         }
     }
 
     //
 
     func getLyrics(_ query: LyricsSearchQuery, options: LyricsOptions) throws -> LyricsDto {
-        let cacheKey = getCacheKey(for: query)
+        let cacheKey = getCacheKey(for: query, options: options)
 
         if let cached = lyricsCache.object(forKey: cacheKey as NSString) {
             return cached.dto
@@ -175,10 +181,14 @@ class MusixmatchLyricsRepository: LyricsRepository {
             let subtitle = try? getFirstSubtitle(subtitlesMessage),
             let subtitleLanguage = subtitle["subtitle_language"] as? String,
             let subtitleBody = subtitle["subtitle_body"] as? String,
+            let subtitleBodyData = subtitleBody.data(using: .utf8),
             let subtitles = try? JSONDecoder().decode(
-                [MusixmatchSubtitle].self, from: subtitleBody.data(using: .utf8)!
+                [MusixmatchSubtitle].self, from: subtitleBodyData
             )
         {
+            guard let lastSubtitle = subtitles.last else {
+                throw LyricsError.decodingError
+            }
 
             let romanizationLanguage = "r\(subtitleLanguage.prefix(1))"
 
@@ -192,23 +202,25 @@ class MusixmatchLyricsRepository: LyricsRepository {
             lyricsLines.append(
                 LyricsLineDto(
                     content: "",
-                    offsetMs: Int(subtitles.last!.time.total * 1000)
+                    offsetMs: Int(lastSubtitle.time.total * 1000)
                 )
             )
 
             if selectedLanguage != subtitleLanguage,
                 let subtitleTranslated = subtitle["subtitle_translated"] as? [String: Any],
                 let subtitleTranslatedBody = subtitleTranslated["subtitle_body"] as? String,
+                let subtitleTranslatedData = subtitleTranslatedBody.data(using: .utf8),
                 let subtitlesTranslated = try? JSONDecoder().decode(
-                    [MusixmatchSubtitle].self, from: subtitleTranslatedBody.data(using: .utf8)!
+                    [MusixmatchSubtitle].self, from: subtitleTranslatedData
                 )
             {
                 if selectedLanguage == romanizationLanguage {
                     romanized = true
 
                     for (index, subtitleTranslated) in subtitlesTranslated.enumerated() {
+                        guard index < lyricsLines.count else { continue }
                         if !subtitleTranslated.text.isEmpty {
-                            lyricsLines[index].content = subtitleTranslated.text
+                            lyricsLines[index].romanizedContent = subtitleTranslated.text
                         }
                     }
                 } else {
@@ -229,7 +241,7 @@ class MusixmatchLyricsRepository: LyricsRepository {
                     for (original, translation) in translations {
                         for i in 0..<lyricsLines.count {
                             if lyricsLines[i].content == original {
-                                lyricsLines[i].content = translation
+                                lyricsLines[i].romanizedContent = translation
                             }
                         }
                     }
@@ -278,8 +290,7 @@ class MusixmatchLyricsRepository: LyricsRepository {
                 let lyricsDto = LyricsDto(
                     lines:
                         plainLyrics
-                        .components(separatedBy: "\n")
-                        .dropLast()
+                        .lyricsLines
                         .map { LyricsLineDto(content: $0.lyricsNoteIfEmpty) },
                     timeSynced: false,
                     romanization: lyricsLanguage.isCanBeRomanizedLanguage

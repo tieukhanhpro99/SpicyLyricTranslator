@@ -14,6 +14,14 @@ class LyricsFullscreenViewControllerHook: ClassHook<UIViewController> {
 
     func viewDidLoad() {
         orig.viewDidLoad()
+        writeLyricsDebugLog("ui=LyricsFullscreenViewController viewDidLoad class=\(NSStringFromClass(type(of: target))) mainThread=\(Thread.isMainThread)")
+        if Thread.isMainThread {
+            target.view.setNeedsLayout()
+        } else {
+            DispatchQueue.main.async {
+                self.target.view.setNeedsLayout()
+            }
+        }
         
         if UserDefaults.lyricsSource == .musixmatch
             && lyricsState.fallbackError == nil

@@ -1,4 +1,4 @@
-import Foundation 
+import Foundation
 import UIKit
 import NaturalLanguage
 
@@ -6,22 +6,22 @@ extension String {
     static func ~= (lhs: String, rhs: String) -> Bool {
         lhs.firstMatch(rhs) != nil
     }
-    
+
     var localized: String {
         BundleHelper.shared.localizedString(self)
     }
-    
+
     var uiKitLocalized: String {
         let bundle = Bundle(for: UIApplication.self)
         return bundle.localizedString(forKey: self, value: nil, table: nil)
     }
-    
+
     func localizeWithFormat(_ arguments: CVarArg...) -> String {
         String(format: self.localized, arguments: arguments)
     }
 
-    var range: NSRange { 
-        NSRange(self.startIndex..., in: self) 
+    var range: NSRange {
+        NSRange(self.startIndex..., in: self)
     }
 
     var strippedTrackTitle: String {
@@ -38,7 +38,16 @@ extension String {
     }
 
     var lyricsNoteIfEmpty: String {
-        self.isEmpty ? "♪" : self
+        self.isEmpty ? "\u{266A}" : self
+    }
+
+    var lyricsLines: [String] {
+        var lines = self.components(separatedBy: "\n")
+        while let last = lines.last,
+              last.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.removeLast()
+        }
+        return lines
     }
 
     func containsInsensitive<S: StringProtocol>(_ s: S) -> Bool {
@@ -53,28 +62,28 @@ extension String {
     func removeMatches(_ pattern: String) -> String {
         try! NSRegularExpression(pattern: pattern)
             .stringByReplacingMatches(
-                in: self, 
+                in: self,
                 range: self.range,
                 withTemplate: ""
             )
     }
-    
+
     var isCanBeRomanizedLanguage: Bool {
         ["ja", "ko", "z1"].contains(self) || self.contains("zh")
     }
-    
+
     var hexadecimal: Data? {
         var data = Data(capacity: count / 2)
-        
+
         let regex = try! NSRegularExpression(pattern: "[0-9a-f]{1,2}", options: .caseInsensitive)
         regex.enumerateMatches(in: self, range: NSRange(startIndex..., in: self)) { match, _, _ in
             let byteString = (self as NSString).substring(with: match!.range)
             let num = UInt8(byteString, radix: 16)!
             data.append(num)
         }
-        
+
         guard data.count > 0 else { return nil }
-        
+
         return data
     }
 }

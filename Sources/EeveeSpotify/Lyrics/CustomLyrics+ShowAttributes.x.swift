@@ -14,6 +14,7 @@ class LyricsOnlyViewControllerHook: ClassHook<UIViewController> {
 
     func viewDidLoad() {
         orig.viewDidLoad()
+        writeLyricsDebugLog("ui=LyricsOnlyViewController viewDidLoad class=\(NSStringFromClass(type(of: target))) mainThread=\(Thread.isMainThread)")
         
         guard
             let lyricsHeaderViewController = target.parent?.children.first

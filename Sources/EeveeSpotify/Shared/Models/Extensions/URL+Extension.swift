@@ -3,6 +3,7 @@ import Foundation
 extension URL {
     var isLyrics: Bool {
         self.path.contains("color-lyrics/v2")
+            || (self.path.contains("lyrics/v2") && self.path.contains("/track/"))
     }
     
     var isPlanOverview: Bool {

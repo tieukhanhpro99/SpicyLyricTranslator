@@ -114,7 +114,7 @@ class LrclibLyricsRepository: LyricsRepository {
         }
 
         if let syncedLyrics = song.syncedLyrics {
-            let lines = Array(syncedLyrics.components(separatedBy: "\n").dropLast())
+            let lines = syncedLyrics.lyricsLines
             return LyricsDto(
                 lines: mapSyncedLyricsLines(lines),
                 timeSynced: true,
@@ -126,7 +126,7 @@ class LrclibLyricsRepository: LyricsRepository {
             throw LyricsError.decodingError
         }
         
-        let lines = Array(plainLyrics.components(separatedBy: "\n").dropLast())
+        let lines = plainLyrics.lyricsLines
         
         return LyricsDto(
             lines: lines.map { content in LyricsLineDto(content: content) },

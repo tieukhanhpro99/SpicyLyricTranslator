@@ -25,6 +25,12 @@ class HttpClientURLSessionHook: ClassHook<NSObject>, SpotifySessionDelegate {
             return
         }
 
+        if url.isLyrics, consumeLyricsTaskHandled(task) {
+            writeLyricsDebugLog("delegate=HttpClientURLSession path=\(url.path) completion=handledSynthetic")
+            orig.URLSession(session, task: task, didCompleteWithError: nil)
+            return
+        }
+
         if CasitaResponseProbe.shouldProbe(url) {
             CasitaResponseProbe.flush(task, url: url)
         }
@@ -68,7 +74,12 @@ class HttpClientURLSessionHook: ClassHook<NSObject>, SpotifySessionDelegate {
                     customLyricsData = try? getLyricsDataForCurrentTrack(url.path, originalLyrics: originalLyrics)
                     semaphore.signal()
                 }
-                _ = semaphore.wait(timeout: .now() + .milliseconds(5000))
+                switch semaphore.wait(timeout: .now() + .milliseconds(5000)) {
+                case .timedOut:
+                    writeLyricsDebugLog("delegate=HttpClientURLSession path=\(url.path) customFetch=timeout fallback=original")
+                case .success:
+                    writeLyricsDebugLog("delegate=HttpClientURLSession path=\(url.path) customFetch=\(customLyricsData == nil ? "failed" : "success") bytes=\(customLyricsData?.count ?? buffer.count)")
+                }
                 orig.URLSession(session, dataTask: task, didReceiveData: customLyricsData ?? buffer)
                 orig.URLSession(session, task: task, didCompleteWithError: nil)
                 return
@@ -111,11 +122,14 @@ class HttpClientURLSessionHook: ClassHook<NSObject>, SpotifySessionDelegate {
 
         do {
             let data = try getLyricsDataForCurrentTrack(url.path)
-            let ok = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "2.0", headerFields: [:])!
+            let ok = makeLyricsHTTPResponse(for: url)
+            writeLyricsDebugLog("delegate=HttpClientURLSession path=\(url.path) status=\(response.statusCode) syntheticStatus=200 contentType=application/protobuf bytes=\(data.count)")
             orig.URLSession(session, dataTask: task, didReceiveResponse: ok, completionHandler: handler)
             orig.URLSession(session, dataTask: task, didReceiveData: data)
+            markLyricsTaskHandled(task)
         } catch {
-            orig.URLSession(session, task: task, didCompleteWithError: error)
+            writeLyricsDebugLog("delegate=HttpClientURLSession path=\(url.path) status=\(response.statusCode) customFetch=failed error=\(lyricsDebugErrorDescription(error))")
+            orig.URLSession(session, dataTask: task, didReceiveResponse: response, completionHandler: handler)
         }
     }
 
@@ -125,6 +139,7 @@ class HttpClientURLSessionHook: ClassHook<NSObject>, SpotifySessionDelegate {
         didReceiveData data: Data
     ) {
         guard let url = task.currentRequest?.url else { return }
+        if url.isLyrics, isLyricsTaskHandled(task) { return }
         if SpotifyResponsePatcher.shouldBlock(url) { return }
         if CasitaResponseProbe.shouldProbe(url) {
             CasitaResponseProbe.append(data, for: task)

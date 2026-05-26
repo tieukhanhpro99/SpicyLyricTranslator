@@ -121,7 +121,13 @@ struct LyricsData {
 
   var lines: [LyricsLine] = []
 
+  var provider: String = String()
+
+  var providerLyricsId: String = String()
+
   var providedBy: String = String()
+
+  var language: String = String()
 
   var restriction: LyricsRestriction = .unrestricted
 
@@ -317,7 +323,10 @@ extension LyricsData: EeveeSwiftProtobuf.Message, EeveeSwiftProtobuf._MessageImp
   static let _protobuf_nameMap: EeveeSwiftProtobuf._NameMap = [
     1: .same(proto: "timeSynchronized"),
     2: .same(proto: "lines"),
+    3: .same(proto: "provider"),
+    4: .same(proto: "providerLyricsId"),
     5: .same(proto: "providedBy"),
+    10: .same(proto: "language"),
     14: .same(proto: "restriction"),
     9: .same(proto: "translation"),
   ]
@@ -330,8 +339,11 @@ extension LyricsData: EeveeSwiftProtobuf.Message, EeveeSwiftProtobuf._MessageImp
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularBoolField(value: &self.timeSynchronized) }()
       case 2: try { try decoder.decodeRepeatedMessageField(value: &self.lines) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.provider) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.providerLyricsId) }()
       case 5: try { try decoder.decodeSingularStringField(value: &self.providedBy) }()
       case 9: try { try decoder.decodeSingularMessageField(value: &self._translation) }()
+      case 10: try { try decoder.decodeSingularStringField(value: &self.language) }()
       case 14: try { try decoder.decodeSingularEnumField(value: &self.restriction) }()
       default: break
       }
@@ -349,12 +361,21 @@ extension LyricsData: EeveeSwiftProtobuf.Message, EeveeSwiftProtobuf._MessageImp
     if !self.lines.isEmpty {
       try visitor.visitRepeatedMessageField(value: self.lines, fieldNumber: 2)
     }
+    if !self.provider.isEmpty {
+      try visitor.visitSingularStringField(value: self.provider, fieldNumber: 3)
+    }
+    if !self.providerLyricsId.isEmpty {
+      try visitor.visitSingularStringField(value: self.providerLyricsId, fieldNumber: 4)
+    }
     if !self.providedBy.isEmpty {
       try visitor.visitSingularStringField(value: self.providedBy, fieldNumber: 5)
     }
     try { if let v = self._translation {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 9)
     } }()
+    if !self.language.isEmpty {
+      try visitor.visitSingularStringField(value: self.language, fieldNumber: 10)
+    }
     if self.restriction != .unrestricted {
       try visitor.visitSingularEnumField(value: self.restriction, fieldNumber: 14)
     }
@@ -364,7 +385,10 @@ extension LyricsData: EeveeSwiftProtobuf.Message, EeveeSwiftProtobuf._MessageImp
   static func ==(lhs: LyricsData, rhs: LyricsData) -> Bool {
     if lhs.timeSynchronized != rhs.timeSynchronized {return false}
     if lhs.lines != rhs.lines {return false}
+    if lhs.provider != rhs.provider {return false}
+    if lhs.providerLyricsId != rhs.providerLyricsId {return false}
     if lhs.providedBy != rhs.providedBy {return false}
+    if lhs.language != rhs.language {return false}
     if lhs.restriction != rhs.restriction {return false}
     if lhs._translation != rhs._translation {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
