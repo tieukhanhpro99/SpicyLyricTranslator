@@ -16,7 +16,7 @@ import {
 import { shouldSkipTranslation, detectLanguageHeuristic, detectRomanizedJapanese, isSameLanguage } from './languageDetection';
 import { openSettingsModal } from './settings';
 import { warn, error } from './debug';
-import { fetchLyricsFromAPI, clearLyricsCache, LyricLineData } from './lyricsFetcher';
+import { fetchLyricsFromAPI, fetchLyricsForTrackUri, clearLyricsCache, LyricLineData } from './lyricsFetcher';
 
 let viewControlsObserver: MutationObserver | null = null;
 let lyricsObserver: MutationObserver | null = null;
@@ -27,6 +27,8 @@ let romanizationToggleButton: Element | null = null;
 let observedLyricsContent: Element | null = null;
 let lastKnownRomanizationState: boolean | null = null;
 let lastTranslatedRomanizationState: boolean | null = null;
+const SPICY_LYRICS_CACHE_NAME = 'SpicyLyrics_LyricsStore';
+const romanizationRepairAttempts = new Set<string>();
 
 function normalizeMatchKey(text: string | undefined | null): string {
     return (text || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '').trim();
@@ -446,6 +448,16 @@ function hasOriginalScript(lines: string[] | null | undefined): boolean {
     return Boolean(lines?.some(line => /[\u3040-\u30FF\u4E00-\u9FFF\u3400-\u4DBF\uAC00-\uD7AF\u1100-\u11FF\u0600-\u06FF\u0590-\u05FF\u0400-\u04FF\u0E00-\u0E7F\u0900-\u097F\u0370-\u03FF]/.test(line || '')));
 }
 
+export function needsRomanizationCacheRepair(lines: string[] | null | undefined, lineData: LyricLineData[] | null | undefined): boolean {
+    if (!hasOriginalScript(lines)) return false;
+    return !Boolean(lineData?.some(line => {
+        const romanized = line.romanizedText?.trim();
+        if (!romanized) return false;
+        if (normalizeMatchKey(romanized) === normalizeMatchKey(line.text)) return false;
+        return !hasOriginalScript([romanized]);
+    }));
+}
+
 export function resolveTranslationSourceLines(input: TranslationSourceSelectionInput): TranslationSourceSelection {
     const domLineTexts = [...input.domLineTexts];
     const cachedOriginalLines = hasOriginalScript(input.cachedSourceLines) ? [...input.cachedSourceLines!] : null;
@@ -499,6 +511,57 @@ export function resolveTranslationSourceLines(input: TranslationSourceSelectionI
         apiVocalTexts,
         apiVocalLineData
     };
+}
+
+function getTrackIdFromUri(trackUri: string | null): string | null {
+    if (!trackUri) return null;
+    const parts = trackUri.split(':');
+    return parts[parts.length - 1] || null;
+}
+
+async function deleteCurrentSpicyLyricsCacheEntry(trackUri: string): Promise<void> {
+    const trackId = getTrackIdFromUri(trackUri);
+    if (!trackId || typeof caches === 'undefined' || typeof caches.open !== 'function') return;
+
+    try {
+        const cache = await caches.open(SPICY_LYRICS_CACHE_NAME);
+        await cache.delete(`/${trackId}`);
+    } catch (e) {
+        warn('Failed to delete current Spicy Lyrics cache entry:', e);
+    }
+}
+
+function refreshSpicyLyricsCurrentTrack(): boolean {
+    try {
+        const execute = (globalThis as any)._spicy_lyrics?.execute;
+        if (typeof execute === 'function') {
+            execute('reset-ttml');
+            return true;
+        }
+    } catch (e) {
+        warn('Failed to trigger Spicy Lyrics refresh:', e);
+    }
+    return false;
+}
+
+async function repairMissingRomanizationCacheIfNeeded(): Promise<boolean> {
+    if (!isRomanizationActive()) return false;
+
+    const currentTrackUri = getCurrentTrackUri();
+    if (!currentTrackUri || romanizationRepairAttempts.has(currentTrackUri)) return false;
+
+    const result = await fetchLyricsForTrackUri(currentTrackUri);
+    if (!result || !needsRomanizationCacheRepair(result.lines, result.lineData)) return false;
+
+    romanizationRepairAttempts.add(currentTrackUri);
+    clearLyricsCache();
+    await deleteCurrentSpicyLyricsCacheEntry(currentTrackUri);
+
+    const refreshed = refreshSpicyLyricsCurrentTrack();
+    if (refreshed && state.showNotifications && Spicetify.showNotification) {
+        Spicetify.showNotification('Repairing Spicy Lyrics romanization cache...');
+    }
+    return refreshed;
 }
 
 export function getLyricsFirstLineText(): string | null {
@@ -1293,6 +1356,11 @@ function setupRomanizationWatcher(): void {
 
     const handler = () => {
         setTimeout(async () => {
+            const repaired = await repairMissingRomanizationCacheIfNeeded();
+            if (repaired) {
+                await new Promise(resolve => setTimeout(resolve, 1800));
+            }
+
             if (state.isEnabled) {
                 // Wait for any in-progress translation to finish first
                 for (let i = 0; i < 20 && state.isTranslating; i++) {

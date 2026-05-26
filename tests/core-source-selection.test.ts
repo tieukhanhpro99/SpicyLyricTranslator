@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { LyricLineData } from '../src/utils/lyricsFetcher';
 import type {
     isRomanizationActive as IsRomanizationActive,
+    needsRomanizationCacheRepair as NeedsRomanizationCacheRepair,
     resolveTranslationSourceLines as ResolveTranslationSourceLines
 } from '../src/utils/core';
 
@@ -17,8 +18,9 @@ import type {
     querySelector: () => null
 };
 
-const { isRomanizationActive, resolveTranslationSourceLines } = require('../src/utils/core') as {
+const { isRomanizationActive, needsRomanizationCacheRepair, resolveTranslationSourceLines } = require('../src/utils/core') as {
     isRomanizationActive: typeof IsRomanizationActive;
+    needsRomanizationCacheRepair: typeof NeedsRomanizationCacheRepair;
     resolveTranslationSourceLines: typeof ResolveTranslationSourceLines;
 };
 
@@ -130,4 +132,30 @@ test('romanization mode pads missing API lines with empty text instead of DOM ro
     assert.deepEqual(result.lineTexts, [originalLines[0], '']);
     assert.deepEqual(result.lineTexts.filter(line => romanizedLines.includes(line)), []);
     assert.equal(result.apiVocalLineData?.[1]?.text, '');
+});
+
+test('detects script lyrics missing romanization data as repairable Spicy Lyrics cache', () => {
+    assert.equal(
+        needsRomanizationCacheRepair(
+            ['\u541b\u306f\u4e16\u754c'],
+            [vocalLine('\u541b\u306f\u4e16\u754c')]
+        ),
+        true
+    );
+
+    assert.equal(
+        needsRomanizationCacheRepair(
+            ['\u541b\u306f\u4e16\u754c'],
+            [vocalLine('\u541b\u306f\u4e16\u754c', 'kimi wa sekai')]
+        ),
+        false
+    );
+
+    assert.equal(
+        needsRomanizationCacheRepair(
+            ['hello world'],
+            [vocalLine('hello world')]
+        ),
+        false
+    );
 });

@@ -88,3 +88,46 @@ test('reads original lyrics from Spicy Lyrics Cache API when query capture is un
     assert.equal(result?.lineData[0]?.romanizedText, 'kimi wa sekai');
     assert.equal(result?.language, 'ja');
 });
+
+test('preserves line-synced romanized text from Spicy Lyrics cache', async () => {
+    clearLyricsCache();
+    installSpicyLyricsCache({
+        id: trackId,
+        Type: 'Line',
+        LanguageISO2: 'ja',
+        Content: [
+            {
+                Type: 'Vocal',
+                Text: '\u541b\u306f\u4e16\u754c',
+                RomanizedText: 'kimi wa sekai',
+                StartTime: 0,
+                EndTime: 1000
+            }
+        ]
+    });
+
+    const result = await fetchLyricsForTrackUri(trackUri);
+
+    assert.deepEqual(result?.lines, ['\u541b\u306f\u4e16\u754c']);
+    assert.equal(result?.lineData[0]?.romanizedText, 'kimi wa sekai');
+});
+
+test('preserves static romanized text from Spicy Lyrics cache', async () => {
+    clearLyricsCache();
+    installSpicyLyricsCache({
+        id: trackId,
+        Type: 'Static',
+        LanguageISO2: 'ja',
+        Lines: [
+            {
+                Text: '\u541b\u306f\u4e16\u754c',
+                RomanizedText: 'kimi wa sekai'
+            }
+        ]
+    });
+
+    const result = await fetchLyricsForTrackUri(trackUri);
+
+    assert.deepEqual(result?.lines, ['\u541b\u306f\u4e16\u754c']);
+    assert.equal(result?.lineData[0]?.romanizedText, 'kimi wa sekai');
+});
