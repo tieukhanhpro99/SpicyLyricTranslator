@@ -468,9 +468,10 @@ async function postJsonProvider(
     body: unknown,
     headers: Record<string, string>,
     providerName: string,
-    options: { preferCosmos?: boolean } = {}
+    options: { preferCosmos?: boolean; allowCosmosFallback?: boolean } = {}
 ): Promise<any> {
     const cosmos = getCosmosAsync();
+    const allowCosmosFallback = options.allowCosmosFallback !== false;
 
     if (options.preferCosmos && cosmos?.post) {
         return normalizeProviderJsonPayload(await cosmos.post(url, body, headers), providerName);
@@ -485,7 +486,7 @@ async function postJsonProvider(
 
         return await readProviderJsonResponse(response, providerName);
     } catch (err) {
-        if (cosmos?.post && isLikelyCorsOrNetworkError(err)) {
+        if (allowCosmosFallback && cosmos?.post && isLikelyCorsOrNetworkError(err)) {
             return normalizeProviderJsonPayload(await cosmos.post(url, body, headers), providerName);
         }
         throw err;
@@ -1011,14 +1012,7 @@ function buildOpenAIChatBody(text: string, langName: string): Record<string, unk
 
 function normalizeGeminiModelName(model: string | undefined): string {
     const trimmed = (model || '').trim().replace(/^models\//, '');
-    if (!trimmed) return DEFAULT_GEMINI_MODEL;
-    if (trimmed === 'gemini-3.1-flash-lite' || trimmed === 'gemini-3.5-flash' || trimmed === 'gemini-3.1-pro-preview') {
-        return trimmed;
-    }
-    if (trimmed.includes('flash-lite')) return 'gemini-3.1-flash-lite';
-    if (trimmed.includes('pro')) return 'gemini-3.1-pro-preview';
-    if (trimmed.includes('flash')) return 'gemini-3.5-flash';
-    return DEFAULT_GEMINI_MODEL;
+    return trimmed || DEFAULT_GEMINI_MODEL;
 }
 
 function normalizeGeminiTemperature(value: string | number | undefined): number {
@@ -1068,7 +1062,7 @@ async function translateWithGemini(text: string, targetLang: string): Promise<{ 
             'Content-Type': 'application/json'
         },
         'Gemini',
-        { preferCosmos: true }
+        { allowCosmosFallback: false }
     );
 
     recordApiUsage(extractGeminiUsage(data));

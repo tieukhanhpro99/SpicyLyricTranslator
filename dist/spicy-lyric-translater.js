@@ -191,15 +191,7 @@ var SpicyLyricTranslater = (() => {
   }
   function normalizeStoredGeminiModel(model) {
     const value = (model || "").trim().replace(/^models\//, "");
-    if (value === "gemini-3.1-flash-lite" || value === "gemini-3.5-flash" || value === "gemini-3.1-pro-preview")
-      return value;
-    if (value.includes("flash-lite"))
-      return "gemini-3.1-flash-lite";
-    if (value.includes("pro"))
-      return "gemini-3.1-pro-preview";
-    if (value.includes("flash"))
-      return "gemini-3.5-flash";
-    return DEFAULT_GEMINI_MODEL;
+    return value || DEFAULT_GEMINI_MODEL;
   }
   var state = {
     isEnabled: storage.get("translation-enabled") === "true",
@@ -1565,6 +1557,7 @@ var SpicyLyricTranslater = (() => {
   }
   async function postJsonProvider(url, body, headers, providerName, options = {}) {
     const cosmos = getCosmosAsync();
+    const allowCosmosFallback = options.allowCosmosFallback !== false;
     if (options.preferCosmos && cosmos?.post) {
       return normalizeProviderJsonPayload(await cosmos.post(url, body, headers), providerName);
     }
@@ -1576,7 +1569,7 @@ var SpicyLyricTranslater = (() => {
       });
       return await readProviderJsonResponse(response, providerName);
     } catch (err) {
-      if (cosmos?.post && isLikelyCorsOrNetworkError(err)) {
+      if (allowCosmosFallback && cosmos?.post && isLikelyCorsOrNetworkError(err)) {
         return normalizeProviderJsonPayload(await cosmos.post(url, body, headers), providerName);
       }
       throw err;
@@ -2040,18 +2033,7 @@ var SpicyLyricTranslater = (() => {
   }
   function normalizeGeminiModelName(model) {
     const trimmed = (model || "").trim().replace(/^models\//, "");
-    if (!trimmed)
-      return DEFAULT_GEMINI_MODEL2;
-    if (trimmed === "gemini-3.1-flash-lite" || trimmed === "gemini-3.5-flash" || trimmed === "gemini-3.1-pro-preview") {
-      return trimmed;
-    }
-    if (trimmed.includes("flash-lite"))
-      return "gemini-3.1-flash-lite";
-    if (trimmed.includes("pro"))
-      return "gemini-3.1-pro-preview";
-    if (trimmed.includes("flash"))
-      return "gemini-3.5-flash";
-    return DEFAULT_GEMINI_MODEL2;
+    return trimmed || DEFAULT_GEMINI_MODEL2;
   }
   function normalizeGeminiTemperature(value) {
     const parsed = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""));
@@ -2098,7 +2080,7 @@ ${text}`
         "Content-Type": "application/json"
       },
       "Gemini",
-      { preferCosmos: true }
+      { allowCosmosFallback: false }
     );
     recordApiUsage(extractGeminiUsage(data));
     if (data.candidates && data.candidates.length > 0) {
@@ -8741,15 +8723,11 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     {
       id: "gemini-model",
       label: "Gemini Model",
-      type: "select",
+      type: "text",
       storageKey: "gemini-model",
       defaultValue: "gemini-3.1-flash-lite",
-      options: [
-        { value: "gemini-3.1-flash-lite", text: "3.1 Flash-Lite" },
-        { value: "gemini-3.5-flash", text: "3.5 Flash" },
-        { value: "gemini-3.1-pro-preview", text: "3.1 Pro" }
-      ],
-      description: "Flash-Lite is fastest; Flash is balanced; Pro is best for harder lyrics",
+      placeholder: "gemini-3.1-flash-lite, gemini-2.5-flash-preview-05-20",
+      description: "Paste any Gemini model ID from Google AI Studio",
       visibleForApis: ["gemini"]
     },
     {
@@ -8815,15 +8793,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       return stored === "gpt-5.5" || stored === "gpt-4o-mini" ? stored : "gpt-4o-mini";
     }
     if (fieldId === "gemini-model") {
-      if (stored === "gemini-3.1-flash-lite" || stored === "gemini-3.5-flash" || stored === "gemini-3.1-pro-preview")
-        return stored;
-      if (stored.includes("flash-lite"))
-        return "gemini-3.1-flash-lite";
-      if (stored.includes("pro"))
-        return "gemini-3.1-pro-preview";
-      if (stored.includes("flash"))
-        return "gemini-3.5-flash";
-      return "gemini-3.1-flash-lite";
+      return stored || "gemini-3.1-flash-lite";
     }
     return value;
   }

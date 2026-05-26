@@ -183,15 +183,11 @@ export const SETTINGS_SCHEMA: SettingsField[] = [
     {
         id: 'gemini-model',
         label: 'Gemini Model',
-        type: 'select',
+        type: 'text',
         storageKey: 'gemini-model',
         defaultValue: 'gemini-3.1-flash-lite',
-        options: [
-            { value: 'gemini-3.1-flash-lite', text: '3.1 Flash-Lite' },
-            { value: 'gemini-3.5-flash', text: '3.5 Flash' },
-            { value: 'gemini-3.1-pro-preview', text: '3.1 Pro' }
-        ],
-        description: 'Flash-Lite is fastest; Flash is balanced; Pro is best for harder lyrics',
+        placeholder: 'gemini-3.1-flash-lite, gemini-2.5-flash-preview-05-20',
+        description: 'Paste any Gemini model ID from Google AI Studio',
         visibleForApis: ['gemini']
     },
     {
@@ -263,11 +259,7 @@ function normalizeLegacySelectValue(fieldId: string, value: string | null): stri
         return stored === 'gpt-5.5' || stored === 'gpt-4o-mini' ? stored : 'gpt-4o-mini';
     }
     if (fieldId === 'gemini-model') {
-        if (stored === 'gemini-3.1-flash-lite' || stored === 'gemini-3.5-flash' || stored === 'gemini-3.1-pro-preview') return stored;
-        if (stored.includes('flash-lite')) return 'gemini-3.1-flash-lite';
-        if (stored.includes('pro')) return 'gemini-3.1-pro-preview';
-        if (stored.includes('flash')) return 'gemini-3.5-flash';
-        return 'gemini-3.1-flash-lite';
+        return stored || 'gemini-3.1-flash-lite';
     }
     return value;
 }
