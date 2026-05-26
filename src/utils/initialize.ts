@@ -5,8 +5,8 @@ import { clearLyricsCache } from './lyricsFetcher';
 import { getCurrentTrackUri } from './trackCache';
 import { injectStyles } from '../styles/main';
 import { registerSettings } from './settings';
-import { initConnectionIndicator, getConnectionState, refreshConnection } from './connectivity';
-import { startUpdateChecker, checkForUpdates, getUpdateInfo, VERSION, showPostUpdateChangelog } from './updater';
+import { initConnectionIndicator, cleanupConnectionIndicator, getConnectionState, refreshConnection } from './connectivity';
+import { startUpdateChecker, stopUpdateChecker, checkForUpdates, getUpdateInfo, VERSION, showPostUpdateChangelog } from './updater';
 
 
 import { 
@@ -20,13 +20,53 @@ import {
     getLyricsFirstLineText,
     updateButtonState,
     setupKeyboardShortcut,
-    setupViewModeObserver
+    setupViewModeObserver,
+    cleanupCoreRuntime
 } from './core';
 
+const RUNTIME_KEY = '__spicyLyricTranslatorRuntime';
+
+type RuntimeHandle = {
+    version: string;
+    cleanup: () => void;
+};
+
+function cleanupPreviousRuntime(): void {
+    const previous = (window as any)[RUNTIME_KEY] as RuntimeHandle | undefined;
+    if (previous?.cleanup) {
+        try {
+            previous.cleanup();
+        } catch (e) {}
+    }
+    document.querySelectorAll('#TranslateToggle').forEach(button => button.remove());
+}
+
 export async function initialize(): Promise<void> {
+    cleanupPreviousRuntime();
+
     while (typeof Spicetify === 'undefined' || !Spicetify.Platform) {
         await new Promise(resolve => setTimeout(resolve, 100));
     }
+
+    const cleanupHandlers: Array<() => void> = [];
+    const runtime: RuntimeHandle = {
+        version: VERSION,
+        cleanup: () => {
+            const handlers = cleanupHandlers.splice(0);
+            for (const cleanup of handlers) {
+                try {
+                    cleanup();
+                } catch (e) {}
+            }
+            cleanupCoreRuntime();
+            cleanupConnectionIndicator();
+            stopUpdateChecker();
+            if ((window as any).SpicyLyricTranslator?.version === VERSION) {
+                delete (window as any).SpicyLyricTranslator;
+            }
+        }
+    };
+    (window as any)[RUNTIME_KEY] = runtime;
     
     setPreferredApi(state.preferredApi, state.customApiUrl, {
         customApiKey: state.customApiKey,
@@ -67,12 +107,13 @@ export async function initialize(): Promise<void> {
         }
     });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    cleanupHandlers.push(() => observer.disconnect());
     
     setupViewModeObserver();
     let lastPlayerTrackUri = getCurrentTrackUri();
     
     if (Spicetify.Player?.addEventListener) {
-        Spicetify.Player.addEventListener('songchange', () => {
+        const songChangeHandler = () => {
             const previousFirstLine = getLyricsFirstLineText();
             const previousTrackUri = lastPlayerTrackUri;
             lastPlayerTrackUri = getCurrentTrackUri();
@@ -96,6 +137,12 @@ export async function initialize(): Promise<void> {
                 }
                 waitForLyricsAndTranslate(20, 800, previousFirstLine, previousTrackUri);
             }
+        };
+        Spicetify.Player.addEventListener('songchange', songChangeHandler);
+        cleanupHandlers.push(() => {
+            try {
+                (Spicetify.Player as any)?.removeEventListener?.('songchange', songChangeHandler);
+            } catch (e) {}
         });
     }
     
@@ -126,6 +173,7 @@ export async function initialize(): Promise<void> {
         checkForUpdates: () => checkForUpdates(true),
         getUpdateInfo: getUpdateInfo,
         version: VERSION,
+        runtimeVersion: VERSION,
         connectivity: {
             getState: getConnectionState,
             refresh: refreshConnection

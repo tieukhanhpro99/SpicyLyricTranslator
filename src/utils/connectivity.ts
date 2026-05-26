@@ -70,6 +70,8 @@ const indicatorState: ConnectionIndicatorState = {
 
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let latencyInterval: ReturnType<typeof setInterval> | null = null;
+let visibilityChangeListener: (() => void) | null = null;
+let beforeUnloadListener: (() => void) | null = null;
 
 let containerElement: HTMLElement | null = null;
 
@@ -314,6 +316,15 @@ async function disconnect(): Promise<void> {
 }
 
 function startPeriodicChecks(): void {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+    if (latencyInterval) {
+        clearInterval(latencyInterval);
+        latencyInterval = null;
+    }
+
     heartbeatInterval = setInterval(async () => {
         const success = await sendHeartbeat();
         if (!success && indicatorState.state === 'connected') {
@@ -411,7 +422,10 @@ export async function initConnectionIndicator(): Promise<void> {
         startPeriodicChecks();
     }
 
-    document.addEventListener('visibilitychange', () => {
+    if (visibilityChangeListener) {
+        document.removeEventListener('visibilitychange', visibilityChangeListener);
+    }
+    visibilityChangeListener = () => {
         if (document.hidden) {
             if (latencyInterval) { clearInterval(latencyInterval); latencyInterval = null; }
         } else {
@@ -433,14 +447,35 @@ export async function initConnectionIndicator(): Promise<void> {
                 }, 500);
             }
         }
-    });
+    };
+    document.addEventListener('visibilitychange', visibilityChangeListener);
 
-    window.addEventListener('beforeunload', () => {
+    if (beforeUnloadListener) {
+        window.removeEventListener('beforeunload', beforeUnloadListener);
+    }
+    beforeUnloadListener = () => {
         disconnect();
-    });
+    };
+    window.addEventListener('beforeunload', beforeUnloadListener);
 }
 
 export function cleanupConnectionIndicator(): void {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+    if (latencyInterval) {
+        clearInterval(latencyInterval);
+        latencyInterval = null;
+    }
+    if (visibilityChangeListener) {
+        document.removeEventListener('visibilitychange', visibilityChangeListener);
+        visibilityChangeListener = null;
+    }
+    if (beforeUnloadListener) {
+        window.removeEventListener('beforeunload', beforeUnloadListener);
+        beforeUnloadListener = null;
+    }
     disconnect();
     removeFromDOM();
     indicatorState.isInitialized = false;

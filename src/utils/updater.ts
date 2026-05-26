@@ -92,6 +92,8 @@ let currentCheckIntervalMs = DEFAULT_CHECK_INTERVAL_MS;
 let currentBackoffMs = 0;
 let checkTimer: number | null = null;
 let checkInProgress = false;
+let visibilityChangeListener: (() => void) | null = null;
+let onlineListener: (() => void) | null = null;
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs: number = REQUEST_TIMEOUT_MS): Promise<Response> {
     const controller = new AbortController();
@@ -952,24 +954,47 @@ export async function checkForUpdates(force: boolean = false): Promise<void> {
 export function startUpdateChecker(intervalMs: number = DEFAULT_CHECK_INTERVAL_MS): void {
     currentCheckIntervalMs = Math.max(MIN_CHECK_INTERVAL_MS, intervalMs);
 
-    document.addEventListener('visibilitychange', () => {
+    if (visibilityChangeListener) {
+        document.removeEventListener('visibilitychange', visibilityChangeListener);
+    }
+    visibilityChangeListener = () => {
         if (!document.hidden) {
             const elapsed = Date.now() - lastCheckTime;
             if (elapsed >= MIN_CHECK_INTERVAL_MS && !checkInProgress && !updateState.isUpdating) {
                 checkForUpdates();
             }
         }
-    });
+    };
+    document.addEventListener('visibilitychange', visibilityChangeListener);
 
-    window.addEventListener('online', () => {
+    if (onlineListener) {
+        window.removeEventListener('online', onlineListener);
+    }
+    onlineListener = () => {
         if (!checkInProgress && !updateState.isUpdating) {
             resetBackoff();
             checkForUpdates();
         }
-    });
+    };
+    window.addEventListener('online', onlineListener);
 
     scheduleNextCheck(5000);
 
+}
+
+export function stopUpdateChecker(): void {
+    if (checkTimer !== null) {
+        window.clearTimeout(checkTimer);
+        checkTimer = null;
+    }
+    if (visibilityChangeListener) {
+        document.removeEventListener('visibilitychange', visibilityChangeListener);
+        visibilityChangeListener = null;
+    }
+    if (onlineListener) {
+        window.removeEventListener('online', onlineListener);
+        onlineListener = null;
+    }
 }
 
 export async function getUpdateInfo(): Promise<{

@@ -1906,10 +1906,35 @@ var SpicyLyricTranslater = (() => {
   function isOpenAISpeedModeModel(model) {
     return model === "gpt-5.5";
   }
+  function buildSongLyricsTranslationInstruction(langName) {
+    return [
+      "You are a professional song lyrics translator.",
+      "",
+      `Translate the following song lyrics into ${langName}.`,
+      "",
+      "Silently infer the whole-song context from the provided lyrics: speaker, emotional tone, relationship, tense, slang, recurring phrases, cultural references, and chorus meaning. Do not output this analysis. Use only the context available in the provided lyrics; do not invent missing story details.",
+      "",
+      "Rules:",
+      "- Output ONLY the translated lyrics.",
+      "- Preserve every [[SLT_BATCH...]] marker exactly at the start of its corresponding translated line.",
+      "- Do not translate, remove, reorder, duplicate, or invent markers.",
+      "- Preserve line breaks and line order.",
+      "- Translate using full-song context, not isolated lines.",
+      "- Keep repeated lines and choruses consistent.",
+      "- Preserve names, titles, references, repetition, and emotional intensity.",
+      `- Make the translation natural and lyrical in ${langName}, while preserving meaning.`,
+      "- Do not add explanations, notes, markdown, code fences, or extra text."
+    ].join("\n");
+  }
+  function buildSongLyricsTranslationPrompt(text, langName) {
+    return `${buildSongLyricsTranslationInstruction(langName)}
+
+${text}`;
+  }
   function buildOpenAIChatBody(text, langName) {
     const model = normalizeOpenAIModelName(openaiModel);
     const useSpeedMode = isOpenAISpeedModeModel(model);
-    const instruction = `You are a song lyrics translator. Translate the given lyrics to ${langName}. Output ONLY the translated text, nothing else. Preserve line breaks. Keep the poetic feel and rhythm where possible.`;
+    const instruction = buildSongLyricsTranslationInstruction(langName);
     const body = {
       model,
       messages: [
@@ -1958,9 +1983,7 @@ var SpicyLyricTranslater = (() => {
           {
             parts: [
               {
-                text: `You are a song lyrics translator. Translate the following lyrics to ${langName}. Output ONLY the translated text, nothing else. Preserve line breaks. Keep the poetic feel and rhythm where possible.
-
-${text}`
+                text: buildSongLyricsTranslationPrompt(text, langName)
               }
             ]
           }
@@ -2061,7 +2084,7 @@ ${text}`
         messages: [
           {
             role: "system",
-            content: `You are a song lyrics translator. Translate the given lyrics to ${langName}. Output ONLY the translated text, nothing else. Preserve line breaks. Keep the poetic feel and rhythm where possible.`
+            content: buildSongLyricsTranslationInstruction(langName)
           },
           {
             role: "user",
@@ -2078,9 +2101,7 @@ ${text}`
           {
             parts: [
               {
-                text: `You are a song lyrics translator. Translate the following lyrics to ${langName}. Output ONLY the translated text, nothing else. Preserve line breaks. Keep the poetic feel and rhythm where possible.
-
-${text}`
+                text: buildSongLyricsTranslationPrompt(text, langName)
               }
             ]
           }
@@ -6040,6 +6061,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   var currentBackoffMs = 0;
   var checkTimer = null;
   var checkInProgress = false;
+  var visibilityChangeListener = null;
+  var onlineListener = null;
   async function fetchWithTimeout(input, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -6779,21 +6802,43 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   }
   function startUpdateChecker(intervalMs = DEFAULT_CHECK_INTERVAL_MS) {
     currentCheckIntervalMs = Math.max(MIN_CHECK_INTERVAL_MS, intervalMs);
-    document.addEventListener("visibilitychange", () => {
+    if (visibilityChangeListener) {
+      document.removeEventListener("visibilitychange", visibilityChangeListener);
+    }
+    visibilityChangeListener = () => {
       if (!document.hidden) {
         const elapsed = Date.now() - lastCheckTime;
         if (elapsed >= MIN_CHECK_INTERVAL_MS && !checkInProgress && !updateState.isUpdating) {
           checkForUpdates();
         }
       }
-    });
-    window.addEventListener("online", () => {
+    };
+    document.addEventListener("visibilitychange", visibilityChangeListener);
+    if (onlineListener) {
+      window.removeEventListener("online", onlineListener);
+    }
+    onlineListener = () => {
       if (!checkInProgress && !updateState.isUpdating) {
         resetBackoff();
         checkForUpdates();
       }
-    });
+    };
+    window.addEventListener("online", onlineListener);
     scheduleNextCheck(5e3);
+  }
+  function stopUpdateChecker() {
+    if (checkTimer !== null) {
+      window.clearTimeout(checkTimer);
+      checkTimer = null;
+    }
+    if (visibilityChangeListener) {
+      document.removeEventListener("visibilitychange", visibilityChangeListener);
+      visibilityChangeListener = null;
+    }
+    if (onlineListener) {
+      window.removeEventListener("online", onlineListener);
+      onlineListener = null;
+    }
   }
   async function getUpdateInfo() {
     try {
@@ -7156,6 +7201,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   };
 
   // src/utils/core.ts
+  var viewControlsObserver = null;
   var lyricsObserver = null;
   var translateDebounceTimer = null;
   var viewModeIntervalId = null;
@@ -7164,6 +7210,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   var observedLyricsContent = null;
   var lastKnownRomanizationState = null;
   var lastTranslatedRomanizationState = null;
+  var keyboardShortcutListener = null;
   var SPICY_LYRICS_CACHE_NAME2 = "SpicyLyrics_LyricsStore";
   var romanizationRepairAttempts = /* @__PURE__ */ new Set();
   function normalizeMatchKey(text) {
@@ -8358,14 +8405,47 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     }, 2e3);
   }
   function setupKeyboardShortcut() {
-    document.addEventListener("keydown", (e) => {
+    if (keyboardShortcutListener) {
+      document.removeEventListener("keydown", keyboardShortcutListener);
+    }
+    keyboardShortcutListener = (e) => {
       if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "t") {
         e.preventDefault();
         e.stopPropagation();
         if (isSpicyLyricsOpen())
           handleTranslateToggle();
       }
-    });
+    };
+    document.addEventListener("keydown", keyboardShortcutListener);
+  }
+  function cleanupCoreRuntime() {
+    if (viewControlsObserver) {
+      viewControlsObserver.disconnect();
+      viewControlsObserver = null;
+    }
+    if (lyricsObserver) {
+      lyricsObserver.disconnect();
+      lyricsObserver = null;
+    }
+    if (translateDebounceTimer) {
+      clearTimeout(translateDebounceTimer);
+      translateDebounceTimer = null;
+    }
+    if (viewModeIntervalId) {
+      clearInterval(viewModeIntervalId);
+      viewModeIntervalId = null;
+    }
+    cleanupRomanizationWatcher();
+    if (keyboardShortcutListener) {
+      document.removeEventListener("keydown", keyboardShortcutListener);
+      keyboardShortcutListener = null;
+    }
+    document.querySelectorAll("#TranslateToggle").forEach((button) => button.remove());
+    getPIPWindow2()?.document.querySelectorAll("#TranslateToggle").forEach((button) => button.remove());
+    observedLyricsContent = null;
+    lastKnownRomanizationState = null;
+    lastTranslatedRomanizationState = null;
+    state.isTranslating = false;
   }
 
   // src/utils/settingsModel.ts
@@ -10605,6 +10685,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   };
   var heartbeatInterval = null;
   var latencyInterval = null;
+  var visibilityChangeListener2 = null;
+  var beforeUnloadListener = null;
   var containerElement = null;
   function getLatencyClass(latencyMs) {
     if (latencyMs <= LATENCY_THRESHOLDS.GREAT)
@@ -10834,6 +10916,14 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     updateUI();
   }
   function startPeriodicChecks() {
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+    if (latencyInterval) {
+      clearInterval(latencyInterval);
+      latencyInterval = null;
+    }
     heartbeatInterval = setInterval(async () => {
       const success = await sendHeartbeat();
       if (!success && indicatorState.state === "connected") {
@@ -10900,6 +10990,12 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     }
     return false;
   }
+  function removeFromDOM() {
+    if (containerElement && containerElement.parentNode) {
+      containerElement.parentNode.removeChild(containerElement);
+    }
+    containerElement = null;
+  }
   async function initConnectionIndicator() {
     if (indicatorState.isInitialized)
       return;
@@ -10912,7 +11008,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     if (connected) {
       startPeriodicChecks();
     }
-    document.addEventListener("visibilitychange", () => {
+    if (visibilityChangeListener2) {
+      document.removeEventListener("visibilitychange", visibilityChangeListener2);
+    }
+    visibilityChangeListener2 = () => {
       if (document.hidden) {
         if (latencyInterval) {
           clearInterval(latencyInterval);
@@ -10936,10 +11035,36 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           }, 500);
         }
       }
-    });
-    window.addEventListener("beforeunload", () => {
+    };
+    document.addEventListener("visibilitychange", visibilityChangeListener2);
+    if (beforeUnloadListener) {
+      window.removeEventListener("beforeunload", beforeUnloadListener);
+    }
+    beforeUnloadListener = () => {
       disconnect();
-    });
+    };
+    window.addEventListener("beforeunload", beforeUnloadListener);
+  }
+  function cleanupConnectionIndicator() {
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+    if (latencyInterval) {
+      clearInterval(latencyInterval);
+      latencyInterval = null;
+    }
+    if (visibilityChangeListener2) {
+      document.removeEventListener("visibilitychange", visibilityChangeListener2);
+      visibilityChangeListener2 = null;
+    }
+    if (beforeUnloadListener) {
+      window.removeEventListener("beforeunload", beforeUnloadListener);
+      beforeUnloadListener = null;
+    }
+    disconnect();
+    removeFromDOM();
+    indicatorState.isInitialized = false;
   }
   function getConnectionState() {
     return { ...indicatorState };
@@ -10953,10 +11078,42 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   }
 
   // src/utils/initialize.ts
+  var RUNTIME_KEY = "__spicyLyricTranslatorRuntime";
+  function cleanupPreviousRuntime() {
+    const previous = window[RUNTIME_KEY];
+    if (previous?.cleanup) {
+      try {
+        previous.cleanup();
+      } catch (e) {
+      }
+    }
+    document.querySelectorAll("#TranslateToggle").forEach((button) => button.remove());
+  }
   async function initialize() {
+    cleanupPreviousRuntime();
     while (typeof Spicetify === "undefined" || !Spicetify.Platform) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    const cleanupHandlers = [];
+    const runtime = {
+      version: VERSION,
+      cleanup: () => {
+        const handlers = cleanupHandlers.splice(0);
+        for (const cleanup of handlers) {
+          try {
+            cleanup();
+          } catch (e) {
+          }
+        }
+        cleanupCoreRuntime();
+        cleanupConnectionIndicator();
+        stopUpdateChecker();
+        if (window.SpicyLyricTranslator?.version === VERSION) {
+          delete window.SpicyLyricTranslator;
+        }
+      }
+    };
+    window[RUNTIME_KEY] = runtime;
     setPreferredApi(state.preferredApi, state.customApiUrl, {
       customApiKey: state.customApiKey,
       customApiFormat: state.customApiFormat,
@@ -10992,10 +11149,11 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       }
     });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    cleanupHandlers.push(() => observer.disconnect());
     setupViewModeObserver();
     let lastPlayerTrackUri = getCurrentTrackUri();
     if (Spicetify.Player?.addEventListener) {
-      Spicetify.Player.addEventListener("songchange", () => {
+      const songChangeHandler = () => {
         const previousFirstLine = getLyricsFirstLineText();
         const previousTrackUri = lastPlayerTrackUri;
         lastPlayerTrackUri = getCurrentTrackUri();
@@ -11017,6 +11175,13 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             updateButtonState();
           }
           waitForLyricsAndTranslate(20, 800, previousFirstLine, previousTrackUri);
+        }
+      };
+      Spicetify.Player.addEventListener("songchange", songChangeHandler);
+      cleanupHandlers.push(() => {
+        try {
+          Spicetify.Player?.removeEventListener?.("songchange", songChangeHandler);
+        } catch (e) {
         }
       });
     }
@@ -11048,6 +11213,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       checkForUpdates: () => checkForUpdates(true),
       getUpdateInfo,
       version: VERSION,
+      runtimeVersion: VERSION,
       connectivity: {
         getState: getConnectionState,
         refresh: refreshConnection
