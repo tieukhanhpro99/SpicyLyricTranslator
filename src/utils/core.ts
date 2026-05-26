@@ -997,11 +997,8 @@ export async function translateCurrentLyrics(): Promise<void> {
         }
         
         if (state.showNotifications && Spicetify.showNotification) {
-            const wasActuallyTranslated = translations.some(t => t.wasTranslated === true);
-            if (wasActuallyTranslated) {
-                const translatedFromApi = translations.some(t => t.wasTranslated === true && t.source === 'api');
-                Spicetify.showNotification(translatedFromApi ? 'Translated from Api' : 'Translated from Cache');
-            }
+            const notif = buildTranslationNotification(translations, currentTrackUri, state.targetLanguage);
+            if (notif) Spicetify.showNotification(notif);
         }
     } catch (err) {
         error('Translation failed:', err);
@@ -1020,6 +1017,63 @@ export async function translateCurrentLyrics(): Promise<void> {
 
 function normalizeForComparison(text: string): string {
     return (text || '').toLowerCase().replace(/[\s\p{P}]+/gu, '').trim();
+}
+
+function formatNotificationDuration(ms: number | undefined): string {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '';
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    const s = ms / 1000;
+    if (s < 60) return `${s.toFixed(s < 10 ? 2 : 1)}s`;
+    const m = Math.floor(s / 60);
+    return `${m}m ${Math.round(s - m * 60)}s`;
+}
+
+function formatNotificationTokens(n: number | undefined): string {
+    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
+    if (n < 1000) return `${n} tok`;
+    if (n < 1000000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k tok`;
+    return `${(n / 1000000).toFixed(2)}M tok`;
+}
+
+function formatProviderName(api: string | undefined): string {
+    if (!api) return '';
+    switch (api) {
+        case 'google': return 'Google';
+        case 'libretranslate': return 'LibreTranslate';
+        case 'deepl': return 'DeepL';
+        case 'openai': return 'OpenAI';
+        case 'gemini': return 'Gemini';
+        case 'custom': return 'Custom';
+        default: return api;
+    }
+}
+
+function buildTranslationNotification(
+    translations: Array<{ wasTranslated?: boolean; source?: 'cache' | 'api'; apiProvider?: string }>,
+    trackUri: string | null,
+    targetLang: string
+): string | null {
+    const someTranslated = translations.some(t => t.wasTranslated === true);
+    if (!someTranslated) return null;
+
+    const fromApi = translations.some(t => t.wasTranslated === true && t.source === 'api');
+    const apiProvider = translations.find(t => t.apiProvider)?.apiProvider;
+    const providerLabel = formatProviderName(apiProvider);
+
+    if (!fromApi) {
+        return providerLabel ? `Translated from cache · ${providerLabel}` : 'Translated from cache';
+    }
+
+    const metrics = trackUri ? getTrackCache(trackUri, targetLang)?.metrics : undefined;
+    const parts: string[] = ['Translated'];
+    if (providerLabel) {
+        parts.push(metrics?.model ? `${providerLabel} · ${metrics.model}` : providerLabel);
+    }
+    const dur = formatNotificationDuration(metrics?.durationMs);
+    if (dur) parts.push(dur);
+    const tok = formatNotificationTokens(metrics?.totalTokens);
+    if (tok) parts.push(tok);
+    return parts.join(' · ');
 }
 
 // Stricter echo check: strips ALL non-letter characters so "Kimi-Wa_Sekai!" and

@@ -813,6 +813,84 @@ function formatDate(timestamp: number): string {
     });
 }
 
+function formatDurationMs(ms: number | undefined): string {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    const seconds = ms / 1000;
+    if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 2 : 1)} s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.round(seconds - minutes * 60);
+    return `${minutes}m ${remainingSeconds}s`;
+}
+
+function formatTokenCount(n: number | undefined): string {
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return '—';
+    if (n < 1000) return String(n);
+    if (n < 1000000) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
+    return `${(n / 1000000).toFixed(2)}M`;
+}
+
+function extractLineSample(line: any): string {
+    if (!line) return '';
+    if (typeof line === 'string') return line.trim();
+    if (typeof line !== 'object') return '';
+
+    const directText = line.Text || line.text || line.Lead?.Text || line.Lead?.text;
+    if (typeof directText === 'string' && directText.trim()) return directText.trim();
+
+    const leadSyllables = line.Lead?.Syllables || line.LeadSyllables;
+    if (Array.isArray(leadSyllables) && leadSyllables.length > 0) {
+        const joined = leadSyllables
+            .map((s: any) => (typeof s === 'string' ? s : (s?.Text || s?.text || '')))
+            .join('');
+        if (joined.trim()) return joined.trim();
+    }
+
+    if (Array.isArray(line.Words)) {
+        const joined = line.Words
+            .map((w: any) => (typeof w === 'string' ? w : (w?.Text || w?.text || '')))
+            .join('');
+        if (joined.trim()) return joined.trim();
+    }
+
+    if (Array.isArray(line.Syllables)) {
+        const joined = line.Syllables
+            .map((s: any) => (typeof s === 'string' ? s : (s?.Text || s?.text || '')))
+            .join('');
+        if (joined.trim()) return joined.trim();
+    }
+
+    if (Array.isArray(line.Background)) {
+        for (const bg of line.Background) {
+            const sample = extractLineSample(bg);
+            if (sample) return sample;
+        }
+    }
+
+    return '';
+}
+
+function formatTrackLength(ms: number | null | undefined): string {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '';
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+function formatApiProviderLabel(api: string | undefined): string {
+    if (!api) return 'Unknown';
+    switch (api) {
+        case 'google': return 'Google Translate';
+        case 'libretranslate': return 'LibreTranslate';
+        case 'deepl': return 'DeepL';
+        case 'openai': return 'OpenAI';
+        case 'gemini': return 'Gemini';
+        case 'custom': return 'Custom API';
+        default: return api;
+    }
+}
+
 function escapeHtml(value: string): string {
     return value
         .replace(/&/g, '&amp;')
@@ -900,6 +978,15 @@ async function openCachedLyricsViewer(trackUri: string, targetLang: string, sour
         return;
     }
     const translatedLines = trackCache.lines || [];
+    const metrics = trackCache.metrics;
+    const providerLabel = formatApiProviderLabel(trackCache.api);
+    const modelLabel = metrics?.model;
+
+    const renderInfoCell = (label: string, value: string, title?: string): string =>
+        `<div class="slt-lyrics-info-cell"${title ? ` title="${escapeHtml(title)}"` : ''}>
+            <span class="slt-lyrics-info-label">${escapeHtml(label)}</span>
+            <span class="slt-lyrics-info-value">${escapeHtml(value)}</span>
+        </div>`;
 
     const renderRows = (sourceLines: string[]): string => {
         const maxLines = Math.max(sourceLines.length, translatedLines.length);
@@ -936,6 +1023,36 @@ async function openCachedLyricsViewer(trackUri: string, targetLang: string, sour
             .slt-lyrics-header {
                 font-size: 13px;
                 color: var(--spice-subtext);
+                overflow-wrap: anywhere;
+            }
+            .slt-lyrics-info {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+                gap: 8px;
+                padding: 12px 14px;
+                background: var(--spice-card);
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.06);
+            }
+            .slt-lyrics-info-cell {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                min-width: 0;
+            }
+            .slt-lyrics-info-label {
+                font-size: 10px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                color: var(--spice-subtext);
+                line-height: 1.3;
+            }
+            .slt-lyrics-info-value {
+                font-size: 13px;
+                font-weight: 600;
+                color: var(--spice-text);
+                line-height: 1.3;
                 overflow-wrap: anywhere;
             }
             .slt-lyrics-toolbar {
@@ -1032,6 +1149,15 @@ async function openCachedLyricsViewer(trackUri: string, targetLang: string, sour
         <div class="slt-lyrics-toolbar">
             <button id="slt-lyrics-copy-all" class="slt-lyrics-copy" type="button">Copy Lyrics</button>
             <button id="slt-lyrics-back-to-cache" class="slt-lyrics-back" type="button">&lt; Back to Cache</button>
+        </div>
+        <div class="slt-lyrics-info">
+            ${renderInfoCell('Provider', providerLabel)}
+            ${renderInfoCell('Model', modelLabel || '—', modelLabel ? `Model: ${modelLabel}` : undefined)}
+            ${renderInfoCell('Direction', `${(sourceLang || trackCache.lang || 'auto').toUpperCase()} → ${targetLang.toUpperCase()}`)}
+            ${renderInfoCell('Lines', String(translatedLines.length))}
+            ${renderInfoCell('Duration', formatDurationMs(metrics?.durationMs), metrics?.apiCalls ? `${metrics.apiCalls} API call${metrics.apiCalls === 1 ? '' : 's'}` : undefined)}
+            ${renderInfoCell('Tokens (in/out)', metrics?.totalTokens ? `${formatTokenCount(metrics.inputTokens)} / ${formatTokenCount(metrics.outputTokens)}` : '—', metrics?.totalTokens ? `Total ${formatTokenCount(metrics.totalTokens)} tokens` : undefined)}
+            ${renderInfoCell('Cached', formatDate(trackCache.timestamp))}
         </div>
         <div class="slt-lyrics-header">Track ID: ${escapeHtml(getTrackIdFromUri(trackUri))}</div>
         <div class="slt-lyrics-grid">
@@ -1231,6 +1357,39 @@ function createCacheViewerUI(): HTMLElement {
                 line-height: 1.35;
                 overflow-wrap: anywhere;
             }
+            .slt-cache-item-provider {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+                align-items: center;
+                margin-top: 4px;
+            }
+            .slt-provider-chip {
+                display: inline-flex;
+                align-items: center;
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--spice-text);
+                background: rgba(30, 215, 96, 0.14);
+                border: 1px solid rgba(30, 215, 96, 0.28);
+                border-radius: 999px;
+                padding: 2px 8px;
+                line-height: 1.4;
+                white-space: nowrap;
+            }
+            .slt-metric-pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 11px;
+                color: var(--spice-subtext);
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 999px;
+                padding: 2px 8px;
+                line-height: 1.4;
+                white-space: nowrap;
+            }
             .slt-cache-delete {
                 min-height: 36px;
                 padding: 8px 14px;
@@ -1369,12 +1528,28 @@ function createCacheViewerUI(): HTMLElement {
                         const trackId = getTrackIdFromUri(track.trackUri);
                         const displayTitle = track.trackName || `Track ID: ${trackId}`;
                         const displayArtist = track.artistName || '';
+                        const providerLabel = formatApiProviderLabel(track.api);
+                        const modelLabel = track.metrics?.model;
+                        const providerBadge = modelLabel
+                            ? `${providerLabel} · ${modelLabel}`
+                            : providerLabel;
+                        const metricsPills: string[] = [];
+                        if (track.metrics?.durationMs) {
+                            metricsPills.push(`<span class="slt-metric-pill" title="Translation duration">⏱ ${formatDurationMs(track.metrics.durationMs)}</span>`);
+                        }
+                        if (track.metrics?.totalTokens) {
+                            metricsPills.push(`<span class="slt-metric-pill" title="Total tokens (input + output)">⌁ ${formatTokenCount(track.metrics.totalTokens)} tok</span>`);
+                        }
+                        if (track.metrics?.apiCalls && track.metrics.apiCalls > 1) {
+                            metricsPills.push(`<span class="slt-metric-pill" title="API calls">↻ ${track.metrics.apiCalls}</span>`);
+                        }
                         return `
                         <div class="slt-cache-item" data-uri="${track.trackUri}" data-lang="${track.targetLang}">
                             <div class="slt-cache-item-info">
                                 <span class="slt-cache-item-title">${escapeHtml(displayTitle)}</span>
                                 ${displayArtist ? `<span class="slt-cache-item-artist">${escapeHtml(displayArtist)}</span>` : ''}
-                                <span class="slt-cache-item-meta">${track.sourceLang} -> ${track.targetLang} - ${track.lineCount} lines - ${formatDate(track.timestamp)}</span>
+                                <span class="slt-cache-item-meta">${escapeHtml(track.sourceLang)} → ${escapeHtml(track.targetLang)} · ${track.lineCount} lines · ${formatDate(track.timestamp)}</span>
+                                <span class="slt-cache-item-provider"><span class="slt-provider-chip">${escapeHtml(providerBadge)}</span>${metricsPills.join('')}</span>
                             </div>
                             <div class="slt-cache-item-actions">
                                 <button class="slt-cache-action slt-cache-play" data-index="${index}">Play</button>
@@ -1529,38 +1704,59 @@ function openCacheViewer(): void {
                 const url = new URL(req.url);
                 const pathParts = url.pathname.split('/').filter(Boolean);
                 const trackId = pathParts.length > 0 ? pathParts[pathParts.length - 1] : null;
-                const isTrackId = trackId && trackId.length === 22;
-                
+                const isTrackId = !!trackId && trackId.length === 22;
+
                 let type = 'Unknown';
                 let lang = '';
                 let linesCount = 0;
                 let sizeBytes = 0;
-                
+                let source = '';
+                let trackLengthMs: number | null = null;
+                let cachedAt: number | null = null;
+                let rawJson: string | null = null;
+                let firstLineSample = '';
+
                 try {
                     const res = await cache.match(req);
                     if (res) {
+                        const dateHeader = res.headers.get('date');
+                        if (dateHeader) {
+                            const parsedDate = Date.parse(dateHeader);
+                            if (!Number.isNaN(parsedDate)) cachedAt = parsedDate;
+                        }
+
                         const buffer = await res.arrayBuffer();
                         sizeBytes = buffer.byteLength;
                         totalSize += sizeBytes;
-                        
+
                         const text = new TextDecoder().decode(buffer);
+                        rawJson = text;
                         const parsed = JSON.parse(text);
                         let lyricsData = parsed;
-                        
+
                         if (parsed && !parsed.Type && parsed.Content !== undefined) {
                             lyricsData = parsed.Content;
                         }
-                        
+
                         if (lyricsData && typeof lyricsData === 'object') {
                             if (lyricsData.Type) type = lyricsData.Type;
                             if (lyricsData.Language) lang = lyricsData.Language;
-                            if (lyricsData.Lines) linesCount = lyricsData.Lines.length;
-                            else if (lyricsData.Content) linesCount = lyricsData.Content.length;
+                            if (lyricsData.Source) source = String(lyricsData.Source);
+                            else if (lyricsData.Provider) source = String(lyricsData.Provider);
+                            if (typeof lyricsData.Length === 'number') trackLengthMs = lyricsData.Length;
+                            const lineCarrier = lyricsData.Lines || lyricsData.Content;
+                            if (Array.isArray(lineCarrier)) {
+                                linesCount = lineCarrier.length;
+                                for (const line of lineCarrier) {
+                                    const sample = extractLineSample(line);
+                                    if (sample) { firstLineSample = sample; break; }
+                                }
+                            }
                         }
                     }
                 } catch (e) {}
-                
-                return { req, url, trackId, isTrackId, type, lang, linesCount, sizeBytes };
+
+                return { req, url, trackId, isTrackId, type, lang, linesCount, sizeBytes, source, trackLengthMs, cachedAt, rawJson, firstLineSample };
             }));
         }
         
@@ -1648,6 +1844,39 @@ function openCacheViewer(): void {
                 opacity: 0.78;
                 line-height: 1.35;
                 overflow-wrap: anywhere;
+            }
+            .slt-cache-item-provider {
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+                align-items: center;
+                margin-top: 4px;
+            }
+            .slt-provider-chip {
+                display: inline-flex;
+                align-items: center;
+                font-size: 11px;
+                font-weight: 600;
+                color: var(--spice-text);
+                background: rgba(30, 215, 96, 0.14);
+                border: 1px solid rgba(30, 215, 96, 0.28);
+                border-radius: 999px;
+                padding: 2px 8px;
+                line-height: 1.4;
+                white-space: nowrap;
+            }
+            .slt-metric-pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                font-size: 11px;
+                color: var(--spice-subtext);
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 999px;
+                padding: 2px 8px;
+                line-height: 1.4;
+                white-space: nowrap;
             }
             .slt-cache-delete {
                 min-height: 36px;
@@ -1775,27 +2004,32 @@ function openCacheViewer(): void {
                 '<div class="slt-empty-cache">No cached Spicy Lyrics data</div>' :
                 cacheItems.map((item, index) => {
                     const displayTitle = item.isTrackId ? 'Track ID: ' + item.trackId : item.url.pathname;
-                    
-                    let metaText = item.url.hostname;
-                    if (item.type !== 'Unknown' || item.lang || item.linesCount > 0) {
-                        const details = [];
-                        if (item.lang) details.push(item.lang.toUpperCase());
-                        if (item.type !== 'Unknown') details.push(item.type);
-                        if (item.linesCount > 0) details.push(`${item.linesCount} lines`);
-                        details.push(formatBytes(item.sizeBytes));
-                        metaText = details.join(' • ');
-                    } else if (item.sizeBytes > 0) {
-                        metaText = `${item.url.hostname} • ${formatBytes(item.sizeBytes)}`;
+
+                    const detailParts: string[] = [item.url.hostname];
+                    if (item.linesCount > 0) detailParts.push(`${item.linesCount} lines`);
+                    if (item.trackLengthMs) {
+                        const len = formatTrackLength(item.trackLengthMs);
+                        if (len) detailParts.push(len);
                     }
-                    
+                    detailParts.push(formatBytes(item.sizeBytes));
+                    if (item.cachedAt) detailParts.push(formatDate(item.cachedAt));
+                    const metaText = detailParts.join(' · ');
+
+                    const chips: string[] = [];
+                    if (item.source) chips.push(`<span class="slt-provider-chip">${escapeHtml(item.source)}</span>`);
+                    if (item.type && item.type !== 'Unknown') chips.push(`<span class="slt-metric-pill" title="Lyric type">${escapeHtml(item.type)}</span>`);
+                    if (item.lang) chips.push(`<span class="slt-metric-pill" title="Language">${escapeHtml(String(item.lang).toUpperCase())}</span>`);
+
                     return `
-                    <div class="slt-cache-item" data-url="${escapeHtml(item.req.url)}" data-size="${item.sizeBytes}" data-track="${item.isTrackId ? item.trackId : ''}">
+                    <div class="slt-cache-item" data-url="${escapeHtml(item.req.url)}" data-size="${item.sizeBytes}" data-track="${item.isTrackId ? item.trackId : ''}" data-index="${index}">
                         <div class="slt-cache-item-info">
                             <span class="slt-cache-item-title">${escapeHtml(displayTitle)}</span>
                             <span class="slt-cache-item-meta">${escapeHtml(metaText)}</span>
+                            ${chips.length ? `<span class="slt-cache-item-provider">${chips.join('')}</span>` : ''}
                         </div>
                         <div class="slt-cache-item-actions">
                             ${item.isTrackId ? `<button class="slt-cache-action slt-cache-play">Play</button>` : ''}
+                            <button class="slt-cache-action slt-cache-view" data-index="${index}">View</button>
                             <button class="slt-cache-delete" data-index="${index}">Delete</button>
                         </div>
                     </div>
@@ -1838,6 +2072,18 @@ function openCacheViewer(): void {
                     button.disabled = false;
                     button.textContent = previousText || 'Play';
                 }
+            });
+        });
+
+        container.querySelectorAll('.slt-cache-view').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const button = e.currentTarget as HTMLButtonElement;
+                const itemEl = button.closest('.slt-cache-item') as HTMLElement;
+                const idxAttr = itemEl?.dataset.index;
+                const idx = idxAttr ? parseInt(idxAttr, 10) : -1;
+                if (idx < 0 || idx >= cacheItems.length) return;
+                Spicetify.PopupModal?.hide();
+                setTimeout(() => openSpicyLyricsEntryInspector(cacheItems[idx]), 120);
             });
         });
 
@@ -1904,6 +2150,178 @@ function openCacheViewer(): void {
     
     return container;
 };
+
+interface SpicyLyricsCacheItem {
+    req: Request;
+    url: URL;
+    trackId: string | null;
+    isTrackId: boolean;
+    type: string;
+    lang: string;
+    linesCount: number;
+    sizeBytes: number;
+    source: string;
+    trackLengthMs: number | null;
+    cachedAt: number | null;
+    rawJson: string | null;
+    firstLineSample: string;
+}
+
+function openSpicyLyricsEntryInspector(item: SpicyLyricsCacheItem): void {
+    const content = document.createElement('div');
+    content.className = 'slt-lyrics-viewer';
+
+    let prettyJson = '';
+    try {
+        prettyJson = item.rawJson ? JSON.stringify(JSON.parse(item.rawJson), null, 2) : '';
+    } catch {
+        prettyJson = item.rawJson || '';
+    }
+    const JSON_VIEW_LIMIT = 2_000_000;
+    let prettyJsonTruncated = false;
+    let originalJsonLength = prettyJson.length;
+    if (prettyJson.length > JSON_VIEW_LIMIT) {
+        prettyJsonTruncated = true;
+        prettyJson = prettyJson.slice(0, JSON_VIEW_LIMIT) + `\n… (truncated at ${formatBytes(JSON_VIEW_LIMIT)} of ${formatBytes(originalJsonLength)})`;
+    }
+
+    const renderInfoCell = (label: string, value: string, title?: string): string =>
+        `<div class="slt-lyrics-info-cell"${title ? ` title="${escapeHtml(title)}"` : ''}>
+            <span class="slt-lyrics-info-label">${escapeHtml(label)}</span>
+            <span class="slt-lyrics-info-value">${escapeHtml(value)}</span>
+        </div>`;
+
+    const displayTitle = item.isTrackId && item.trackId ? `Track ID: ${item.trackId}` : item.url.pathname;
+    const trackLen = item.trackLengthMs ? formatTrackLength(item.trackLengthMs) : '';
+
+    content.innerHTML = `
+        <style>
+            .slt-lyrics-viewer {
+                width: min(800px, 90vw);
+                max-width: 100%;
+                max-height: 78vh;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+                padding: 18px 22px 22px;
+                box-sizing: border-box;
+                overflow-x: hidden;
+                overflow-y: hidden;
+            }
+            .slt-lyrics-info {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+                gap: 8px;
+                padding: 12px 14px;
+                background: var(--spice-card);
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.06);
+            }
+            .slt-lyrics-info-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+            .slt-lyrics-info-label {
+                font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+                color: var(--spice-subtext); line-height: 1.3;
+            }
+            .slt-lyrics-info-value { font-size: 13px; font-weight: 600; color: var(--spice-text); line-height: 1.3; overflow-wrap: anywhere; }
+            .slt-lyrics-header { font-size: 13px; color: var(--spice-subtext); overflow-wrap: anywhere; }
+            .slt-lyrics-toolbar { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+            .slt-lyrics-back {
+                min-height: 36px; padding: 8px 14px; border-radius: 500px; border: none;
+                background: var(--spice-main-elevated); color: var(--spice-text);
+                font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap;
+            }
+            .slt-lyrics-back:hover { opacity: 0.85; }
+            .slt-lyrics-copy {
+                min-height: 36px; padding: 8px 14px; border-radius: 500px; border: none;
+                background: var(--spice-button); color: var(--spice-text);
+                font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap;
+            }
+            .slt-lyrics-copy.slt-copied { background: #1db954; }
+            .slt-json-box {
+                flex: 1;
+                min-height: 200px;
+                max-height: 48vh;
+                overflow: auto;
+                background: rgba(0, 0, 0, 0.35);
+                border-radius: 8px;
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                padding: 12px 14px;
+                font-family: 'JetBrains Mono', 'Consolas', monospace;
+                font-size: 12px;
+                line-height: 1.5;
+                color: var(--spice-text);
+                white-space: pre;
+                tab-size: 2;
+            }
+            .slt-lyrics-sample {
+                font-size: 13px;
+                color: var(--spice-text);
+                background: var(--spice-card);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+                padding: 10px 12px;
+                line-height: 1.4;
+            }
+            .slt-lyrics-sample-label {
+                font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+                color: var(--spice-subtext); display: block; margin-bottom: 4px;
+            }
+        </style>
+        <div class="slt-lyrics-toolbar">
+            <button id="slt-sl-entry-copy" class="slt-lyrics-copy" type="button">Copy JSON</button>
+            <button id="slt-sl-entry-back" class="slt-lyrics-back" type="button">&lt; Back to Cache</button>
+        </div>
+        <div class="slt-lyrics-info">
+            ${renderInfoCell('Source', item.source || 'Unknown')}
+            ${renderInfoCell('Type', item.type !== 'Unknown' ? item.type : '—')}
+            ${renderInfoCell('Language', item.lang ? item.lang.toUpperCase() : '—')}
+            ${renderInfoCell('Lines', item.linesCount ? String(item.linesCount) : '—')}
+            ${renderInfoCell('Track Length', trackLen || '—')}
+            ${renderInfoCell('Size', formatBytes(item.sizeBytes))}
+            ${renderInfoCell('Cached', item.cachedAt ? formatDate(item.cachedAt) : '—')}
+        </div>
+        <div class="slt-lyrics-header">${escapeHtml(displayTitle)} · ${escapeHtml(item.url.hostname)}</div>
+        ${item.firstLineSample ? `<div class="slt-lyrics-sample"><span class="slt-lyrics-sample-label">First Line</span>${escapeHtml(item.firstLineSample)}</div>` : ''}
+        ${prettyJsonTruncated ? `<div class="slt-lyrics-sample" style="color: #f0b86e;"><span class="slt-lyrics-sample-label">Notice</span>JSON preview truncated for performance. Use Copy JSON to copy the full ${formatBytes(originalJsonLength)} payload.</div>` : ''}
+        <div class="slt-json-box" id="slt-sl-entry-json">${escapeHtml(prettyJson || '(empty response)')}</div>
+    `;
+
+    if (Spicetify.PopupModal) {
+        Spicetify.PopupModal.display({
+            title: 'Spicy Lyrics Entry',
+            content,
+            isLarge: true
+        });
+    }
+
+    const backBtn = content.querySelector('#slt-sl-entry-back') as HTMLButtonElement | null;
+    backBtn?.addEventListener('click', () => {
+        Spicetify.PopupModal?.hide();
+        setTimeout(() => openSpicyLyricsCacheViewer(), 120);
+    });
+
+    const copyBtn = content.querySelector('#slt-sl-entry-copy') as HTMLButtonElement | null;
+    copyBtn?.addEventListener('click', async () => {
+        let fullJson = '';
+        try {
+            fullJson = item.rawJson ? JSON.stringify(JSON.parse(item.rawJson), null, 2) : '';
+        } catch {
+            fullJson = item.rawJson || '';
+        }
+        try {
+            await navigator.clipboard.writeText(fullJson || prettyJson || '');
+            copyBtn.textContent = 'Copied!';
+            copyBtn.classList.add('slt-copied');
+            setTimeout(() => {
+                copyBtn.textContent = 'Copy JSON';
+                copyBtn.classList.remove('slt-copied');
+            }, 2000);
+        } catch {
+            copyBtn.textContent = 'Failed';
+            setTimeout(() => { copyBtn.textContent = 'Copy JSON'; }, 2000);
+        }
+    });
+}
 
 async function openSpicyLyricsCacheViewer(): Promise<void> {
     if (Spicetify.PopupModal) {

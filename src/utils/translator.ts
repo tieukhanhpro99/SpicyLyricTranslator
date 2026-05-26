@@ -1,14 +1,15 @@
 import storage from './storage';
 import { warn, error as logError } from './debug';
-import { 
-    getTrackCache, 
-    setTrackCache, 
-    clearAllTrackCache, 
-    getTrackCacheStats, 
-    getAllCachedTracks, 
+import {
+    getTrackCache,
+    setTrackCache,
+    clearAllTrackCache,
+    getTrackCacheStats,
+    getAllCachedTracks,
     deleteTrackCache,
-    getCurrentTrackUri 
+    getCurrentTrackUri
 } from './trackCache';
+import type { TrackCacheMetrics } from './trackCache';
 import { detectLanguageHeuristic, isSameLanguage, normalizeLanguageCode } from './languageDetection';
 
 export interface TranslationResult {
@@ -58,6 +59,72 @@ const RATE_LIMIT = {
 };
 
 let lastApiCallTime = 0;
+
+interface MetricsSession {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    apiCalls: number;
+}
+
+let activeMetricsSession: MetricsSession | null = null;
+
+function beginMetricsSession(): MetricsSession {
+    activeMetricsSession = { inputTokens: 0, outputTokens: 0, totalTokens: 0, apiCalls: 0 };
+    return activeMetricsSession;
+}
+
+function endMetricsSession(session: MetricsSession): void {
+    if (activeMetricsSession === session) {
+        activeMetricsSession = null;
+    }
+}
+
+function recordApiUsage(usage: { input?: number; output?: number; total?: number } | null | undefined): void {
+    if (!activeMetricsSession) return;
+    activeMetricsSession.apiCalls += 1;
+    if (!usage) return;
+    if (typeof usage.input === 'number') activeMetricsSession.inputTokens += usage.input;
+    if (typeof usage.output === 'number') activeMetricsSession.outputTokens += usage.output;
+    if (typeof usage.total === 'number') {
+        activeMetricsSession.totalTokens += usage.total;
+    } else if (typeof usage.input === 'number' || typeof usage.output === 'number') {
+        activeMetricsSession.totalTokens += (usage.input || 0) + (usage.output || 0);
+    }
+}
+
+function extractOpenAIUsage(data: any): { input?: number; output?: number; total?: number } | null {
+    const usage = data?.usage;
+    if (!usage || typeof usage !== 'object') return null;
+    return {
+        input: typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : undefined,
+        output: typeof usage.completion_tokens === 'number' ? usage.completion_tokens : undefined,
+        total: typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined
+    };
+}
+
+function extractGeminiUsage(data: any): { input?: number; output?: number; total?: number } | null {
+    const usage = data?.usageMetadata;
+    if (!usage || typeof usage !== 'object') return null;
+    return {
+        input: typeof usage.promptTokenCount === 'number' ? usage.promptTokenCount : undefined,
+        output: typeof usage.candidatesTokenCount === 'number' ? usage.candidatesTokenCount : undefined,
+        total: typeof usage.totalTokenCount === 'number' ? usage.totalTokenCount : undefined
+    };
+}
+
+function getActiveModelName(): string | undefined {
+    switch (preferredApi) {
+        case 'gemini':
+            return geminiModel || undefined;
+        case 'openai':
+            return openaiModel || undefined;
+        case 'custom':
+            return customApiModel || undefined;
+        default:
+            return undefined;
+    }
+}
 
 const BATCH_SEPARATOR = ' ||| ';
 const BATCH_SEPARATOR_REGEX = /\s*\|\|\|\s*/g;
@@ -761,12 +828,13 @@ async function translateWithGoogle(text: string, targetLang: string, sourceLang?
     const encodedText = encodeURIComponent(text);
     const sl = normalizeSourceLangHint(sourceLang);
     const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${targetLang}&dt=t&q=${encodedText}`;
-    
+
     const response = await fetch(url);
+    recordApiUsage(null);
     if (!response.ok) {
         throw new Error(`Google Translate API error: ${response.status}`);
     }
-    
+
     const data = await response.json();
     const detectedLang = data[2] || 'unknown';
     
@@ -838,6 +906,7 @@ async function translateWithLibreTranslate(text: string, targetLang: string): Pr
         'LibreTranslate',
         { preferCosmos: true }
     );
+    recordApiUsage(null);
     if (typeof data?.translatedText === 'string') {
         return data.translatedText;
     }
@@ -859,7 +928,8 @@ async function translateWithDeepL(text: string, targetLang: string): Promise<{ t
         getDeepLHeaders(deeplApiKey),
         'DeepL'
     );
-    
+    recordApiUsage(null);
+
     if (data.translations && data.translations.length > 0) {
         return {
             translation: data.translations[0].text,
@@ -887,14 +957,16 @@ async function translateWithOpenAI(text: string, targetLang: string): Promise<{ 
         'OpenAI',
         { preferCosmos: true }
     );
-    
+
+    recordApiUsage(extractOpenAIUsage(data));
+
     if (data.choices && data.choices.length > 0) {
         const translation = data.choices[0].message?.content?.trim();
         if (translation) {
             return { translation };
         }
     }
-    
+
     throw new Error('Invalid response from OpenAI API');
 }
 
@@ -962,6 +1034,12 @@ function getGeminiGenerateContentUrl(model: string | undefined): string {
     return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(normalizedModel)}:generateContent`;
 }
 
+function appendGeminiApiKeyQuery(url: string, apiKey: string): string {
+    if (!apiKey) return url;
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}key=${encodeURIComponent(apiKey)}`;
+}
+
 async function translateWithGemini(text: string, targetLang: string): Promise<{ translation: string; detectedLang?: string }> {
     if (!geminiApiKey) {
         throw createProviderConfigError('Gemini API key not configured. Set it in Settings.');
@@ -970,7 +1048,7 @@ async function translateWithGemini(text: string, targetLang: string): Promise<{ 
     const langName = SUPPORTED_LANGUAGES.find(l => l.code === targetLang)?.name || targetLang;
 
     const data = await postJsonProvider(
-        getGeminiGenerateContentUrl(geminiModel),
+        appendGeminiApiKeyQuery(getGeminiGenerateContentUrl(geminiModel), geminiApiKey),
         {
             contents: [
                 {
@@ -983,17 +1061,17 @@ async function translateWithGemini(text: string, targetLang: string): Promise<{ 
             ],
             generationConfig: {
                 temperature: geminiTemperature,
-                maxOutputTokens: Math.max(text.length * 3, 2048),
-                thinkingConfig: { thinkingBudget: 0 }
+                maxOutputTokens: Math.max(text.length * 3, 2048)
             }
         },
         {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': geminiApiKey
+            'Content-Type': 'application/json'
         },
         'Gemini',
         { preferCosmos: true }
     );
+
+    recordApiUsage(extractGeminiUsage(data));
 
     if (data.candidates && data.candidates.length > 0) {
         const translation = data.candidates[0]?.content?.parts?.[0]?.text?.trim();
@@ -1188,18 +1266,14 @@ async function translateWithCustomApi(text: string, targetLang: string): Promise
         : validateCustomApiUrl();
 
     try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: getCustomApiHeaders(format),
-            body: JSON.stringify(buildCustomSingleBody(text, targetLang, format))
-        });
-
-        if (!response.ok) {
-            const errorBody = await response.text().catch(() => '');
-            throw new Error(`Custom API error: ${response.status}`);
-        }
-
-        const data = await response.json();
+        const data = await postJsonProvider(
+            url,
+            buildCustomSingleBody(text, targetLang, format),
+            getCustomApiHeaders(format),
+            'Custom API',
+            { preferCosmos: true }
+        );
+        recordApiUsage(extractOpenAIUsage(data) || extractGeminiUsage(data));
         const translation = extractTranslation(data);
 
         if (translation) {
@@ -1306,6 +1380,7 @@ async function translateBatchArray(texts: string[], targetLang: string): Promise
                 getCustomApiHeaders('deepl'),
                 'DeepL batch'
             );
+        recordApiUsage(null);
         if (data.translations && Array.isArray(data.translations)) {
             return {
                 translations: data.translations.map((t: any) => t.text || ''),
@@ -1347,6 +1422,7 @@ async function translateBatchArray(texts: string[], targetLang: string): Promise
             getCustomApiHeaders(customApiFormat || 'generic'),
             'Batch API'
         );
+    recordApiUsage(extractOpenAIUsage(data) || extractGeminiUsage(data));
     const normalized = normalizeBatchTranslations(data);
     if (normalized) {
         return normalized;
@@ -1737,11 +1813,65 @@ function inferDominantSourceLangFromLines(lines: string[]): string | undefined {
     return undefined;
 }
 
+function buildMetricsForCache(session: MetricsSession, startedAt: number): TrackCacheMetrics | undefined {
+    if (session.apiCalls === 0) return undefined;
+    const model = getActiveModelName();
+    return {
+        model,
+        durationMs: Date.now() - startedAt,
+        apiCalls: session.apiCalls,
+        inputTokens: session.inputTokens > 0 ? session.inputTokens : undefined,
+        outputTokens: session.outputTokens > 0 ? session.outputTokens : undefined,
+        totalTokens: session.totalTokens > 0 ? session.totalTokens : undefined
+    };
+}
+
 export async function translateLyrics(
     lines: string[],
     targetLang: string,
     trackUri?: string,
     detectedSourceLang?: string
+): Promise<TranslationResult[]> {
+    const metricsSession = beginMetricsSession();
+    const metricsStartedAt = Date.now();
+    try {
+        return await translateLyricsInner(lines, targetLang, trackUri, detectedSourceLang, metricsSession, metricsStartedAt);
+    } finally {
+        endMetricsSession(metricsSession);
+    }
+}
+
+function buildSourceLanguageCorpus(lines: string[]): string {
+    return lines
+        .filter(line => line && line.trim().length > 0)
+        .join(' ')
+        .slice(0, 4000);
+}
+
+function detectCorpusLanguageStrict(lines: string[]): { code: string; confidence: number } | null {
+    const corpus = buildSourceLanguageCorpus(lines);
+    if (corpus.length < 4) return null;
+    return detectLanguageHeuristic(corpus);
+}
+
+function buildSameLanguagePassthrough(lines: string[], targetLang: string, detectedLang: string): TranslationResult[] {
+    return lines.map(line => ({
+        originalText: line,
+        translatedText: line,
+        targetLanguage: targetLang,
+        detectedLanguage: detectedLang,
+        wasTranslated: false,
+        source: 'cache' as const
+    }));
+}
+
+async function translateLyricsInner(
+    lines: string[],
+    targetLang: string,
+    trackUri: string | undefined,
+    detectedSourceLang: string | undefined,
+    metricsSession: MetricsSession,
+    metricsStartedAt: number
 ): Promise<TranslationResult[]> {
     const currentTrackUri = trackUri || getCurrentTrackUri();
     const sourceFingerprint = computeSourceLyricsFingerprint(lines);
@@ -1754,7 +1884,28 @@ export async function translateLyrics(
             detectedSourceLang = inferred;
         }
     }
-    
+
+    const sameLangFromHint = detectedSourceLang && detectedSourceLang !== 'auto' && detectedSourceLang !== 'unknown' && isSameLanguage(detectedSourceLang, targetLang);
+    const confidentLineLangs = Array.from(lineLanguages);
+    const sameLangFromLines = !hasMixedSourceLanguages && confidentLineLangs.length > 0 && confidentLineLangs.every(lang => isSameLanguage(lang, targetLang));
+    let sameLangFromCorpus = false;
+    if (!sameLangFromHint && !sameLangFromLines) {
+        const corpusDetection = detectCorpusLanguageStrict(lines);
+        if (corpusDetection && corpusDetection.confidence >= 0.6 && isSameLanguage(corpusDetection.code, targetLang)) {
+            sameLangFromCorpus = true;
+            if (!detectedSourceLang || detectedSourceLang === 'auto' || detectedSourceLang === 'unknown') {
+                detectedSourceLang = corpusDetection.code;
+            }
+        }
+    }
+
+    if (sameLangFromHint || sameLangFromLines || sameLangFromCorpus) {
+        if (currentTrackUri) {
+            deleteTrackCache(currentTrackUri, targetLang);
+        }
+        return buildSameLanguagePassthrough(lines, targetLang, detectedSourceLang || targetLang);
+    }
+
     if (currentTrackUri) {
         const trackCache = getTrackCache(currentTrackUri, targetLang);
         if (trackCache && trackCache.lines.length === lines.length) {
@@ -1815,12 +1966,23 @@ export async function translateLyrics(
     if (uncachedLines.length === 0) {
         const finalResults = lines.map((_, index) => cachedResults.get(index)!);
         const someTranslated = finalResults.some(r => r.wasTranslated);
-        
+
         if (currentTrackUri && someTranslated) {
             const translatedLines = finalResults.map(r => r.translatedText);
-            setTrackCache(currentTrackUri, targetLang, detectedSourceLang || 'auto', translatedLines, preferredApi, sourceFingerprint, undefined, undefined, lines);
+            setTrackCache(
+                currentTrackUri,
+                targetLang,
+                detectedSourceLang || 'auto',
+                translatedLines,
+                preferredApi,
+                sourceFingerprint,
+                undefined,
+                undefined,
+                lines,
+                buildMetricsForCache(metricsSession, metricsStartedAt)
+            );
         }
-        
+
         return finalResults;
     }
     
@@ -1972,13 +2134,45 @@ export async function translateLyrics(
     for (let i = 0; i < lines.length; i++) {
         results.push(cachedResults.get(i)!);
     }
-    
+
+    const meaningfulCount = results.reduce(
+        (count, r) => (r.wasTranslated && hasMeaningfulTranslationDifference(r.originalText, r.translatedText, targetLang) ? count + 1 : count),
+        0
+    );
+
+    if (meaningfulCount === 0) {
+        for (let i = 0; i < results.length; i++) {
+            const r = results[i];
+            if (!r.wasTranslated) continue;
+            results[i] = {
+                ...r,
+                translatedText: r.originalText,
+                wasTranslated: false
+            };
+        }
+        if (currentTrackUri) {
+            deleteTrackCache(currentTrackUri, targetLang);
+        }
+        return results;
+    }
+
     const someTranslated = results.some(r => r.wasTranslated);
     if (currentTrackUri && results.length > 0 && someTranslated) {
         const translatedLines = results.map(r => r.translatedText);
-        setTrackCache(currentTrackUri, targetLang, detectedLang, translatedLines, preferredApi, sourceFingerprint, undefined, undefined, lines);
+        setTrackCache(
+            currentTrackUri,
+            targetLang,
+            detectedLang,
+            translatedLines,
+            preferredApi,
+            sourceFingerprint,
+            undefined,
+            undefined,
+            lines,
+            buildMetricsForCache(metricsSession, metricsStartedAt)
+        );
     }
-    
+
     return results;
 }
 

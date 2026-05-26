@@ -442,7 +442,7 @@ test('OpenAI maps retired dropdown values to GPT-4o mini', async () => {
     assert.equal(body.model, 'gpt-4o-mini');
 });
 
-test('Gemini uses the configured model in the generateContent endpoint', async () => {
+test('Gemini uses the configured model in the generateContent endpoint and sends the key as a query param', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {
         geminiApiKey: 'gemini-key',
@@ -467,7 +467,8 @@ test('Gemini uses the configured model in the generateContent endpoint', async (
 
     assert.equal(result.translatedText, 'Xin chao');
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent');
+    assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=gemini-key');
+    assert.deepEqual(calls[0].init?.headers, { 'Content-Type': 'application/json' });
 });
 
 test('Gemini maps old Flash model settings to the new 3.5 Flash endpoint', async () => {
@@ -493,7 +494,34 @@ test('Gemini maps old Flash model settings to the new 3.5 Flash endpoint', async
 
     await translateText('\u3053\u3093\u306b\u3061\u306f', 'vi', 'ja');
 
-    assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent');
+    assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=gemini-key');
+});
+
+test('Gemini omits thinkingConfig so generic models do not 400 on unknown options', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.1-flash-lite'
+    } as any);
+
+    const calls: FetchCall[] = [];
+    (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return jsonResponse({
+            candidates: [
+                {
+                    content: {
+                        parts: [{ text: 'Xin chao' }]
+                    }
+                }
+            ]
+        });
+    };
+
+    await translateText('\u3053\u3093\u306b\u3061\u306f', 'vi', 'ja');
+
+    const body = JSON.parse(String(calls[0].init?.body));
+    assert.equal(Object.prototype.hasOwnProperty.call(body.generationConfig, 'thinkingConfig'), false);
 });
 
 test('Gemini uses the configured temperature in generationConfig', async () => {
@@ -521,6 +549,140 @@ test('Gemini uses the configured temperature in generationConfig', async () => {
 
     const body = JSON.parse(String(calls[0].init?.body));
     assert.equal(body.generationConfig.temperature, 0.8);
+});
+
+test('Gemini skips API entirely when corpus is confidently same language as target', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.5-flash'
+    } as any);
+
+    let fetchCalls = 0;
+    (globalThis as any).fetch = async () => {
+        fetchCalls++;
+        return jsonResponse({
+            candidates: [
+                { content: { parts: [{ text: 'should-not-be-used' }] } }
+            ]
+        });
+    };
+
+    (globalThis as any).Spicetify = {
+        Player: {
+            data: {
+                item: {
+                    uri: 'spotify:track:SAMELANGENGENGENGENG12',
+                    name: 'Bones',
+                    artists: [{ name: 'SleepMode' }]
+                }
+            }
+        }
+    };
+
+    const sourceLines = [
+        'I have been walking down this empty street',
+        'Looking for a sign that everything will be alright',
+        'The bones in my body know exactly where to go'
+    ];
+
+    const { translateLyrics } = require('../src/utils/translator') as { translateLyrics: (lines: string[], targetLang: string, trackUri?: string) => Promise<any[]> };
+    const results = await translateLyrics(sourceLines, 'en', 'spotify:track:SAMELANGENGENGENGENG12');
+
+    assert.equal(fetchCalls, 0, 'expected no API call when source corpus is already in target language');
+    assert.equal(results.every(r => r.wasTranslated === false), true);
+    assert.deepEqual(results.map(r => r.translatedText), sourceLines);
+
+    const { getAllCachedTracks } = require('../src/utils/trackCache') as { getAllCachedTracks: () => any[] };
+    assert.equal(getAllCachedTracks().length, 0);
+});
+
+test('Gemini does not cache English-to-English no-op translations', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.5-flash'
+    } as any);
+
+    const sourceLines = ['Bones in the wind', 'Walking through the dark'];
+
+    (globalThis as any).fetch = async () => jsonResponse({
+        candidates: [
+            { content: { parts: [{ text: sourceLines.join('\n') }] } }
+        ],
+        usageMetadata: { promptTokenCount: 50, candidatesTokenCount: 50, totalTokenCount: 100 }
+    });
+
+    (globalThis as any).Spicetify = {
+        Player: {
+            data: {
+                item: {
+                    uri: 'spotify:track:ENGENGENGENGENGENGENG12',
+                    name: 'Bones',
+                    artists: [{ name: 'SleepMode' }]
+                }
+            }
+        }
+    };
+
+    const { translateLyrics } = require('../src/utils/translator') as { translateLyrics: (lines: string[], targetLang: string, trackUri?: string) => Promise<any[]> };
+    const results = await translateLyrics(sourceLines, 'en', 'spotify:track:ENGENGENGENGENGENGENG12');
+
+    assert.equal(results.length, sourceLines.length);
+    assert.equal(results.every(r => r.wasTranslated === false), true, 'expected all lines to be marked as not translated when result equals source');
+
+    const { getAllCachedTracks } = require('../src/utils/trackCache') as { getAllCachedTracks: () => any[] };
+    const cached = getAllCachedTracks();
+    assert.equal(cached.length, 0, 'expected no track cache entry for no-op translation');
+});
+
+test('Gemini batch translation persists model/duration/token metrics in the track cache', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.1-flash-lite'
+    } as any);
+
+    const sourceLines = ['こんにちは', 'さようなら'];
+    const translatedLines = ['Xin chào', 'Tạm biệt'];
+
+    (globalThis as any).fetch = async () => jsonResponse({
+        candidates: [
+            { content: { parts: [{ text: translatedLines.join('\n') }] } }
+        ],
+        usageMetadata: {
+            promptTokenCount: 123,
+            candidatesTokenCount: 45,
+            totalTokenCount: 168
+        }
+    });
+
+    (globalThis as any).Spicetify = {
+        Player: {
+            data: {
+                item: {
+                    uri: 'spotify:track:1234567890abcdef123456',
+                    name: 'Test Song',
+                    artists: [{ name: 'Test Artist' }]
+                }
+            }
+        }
+    };
+
+    const { translateLyrics } = require('../src/utils/translator') as { translateLyrics: (lines: string[], targetLang: string, trackUri?: string) => Promise<any[]> };
+    await translateLyrics(sourceLines, 'vi', 'spotify:track:1234567890abcdef123456');
+
+    const { getAllCachedTracks } = require('../src/utils/trackCache') as { getAllCachedTracks: () => any[] };
+    const cached = getAllCachedTracks();
+    assert.equal(cached.length, 1);
+    assert.equal(cached[0].api, 'gemini');
+    assert.ok(cached[0].metrics, 'metrics should be present');
+    assert.equal(cached[0].metrics.model, 'gemini-3.1-flash-lite');
+    assert.equal(cached[0].metrics.inputTokens, 123);
+    assert.equal(cached[0].metrics.outputTokens, 45);
+    assert.equal(cached[0].metrics.totalTokens, 168);
+    assert.equal(cached[0].metrics.apiCalls >= 1, true);
+    assert.equal(typeof cached[0].metrics.durationMs, 'number');
 });
 
 test('Gemini accepts a complete code-fenced batch response without sending chunked follow-up requests', async () => {
@@ -609,10 +771,9 @@ test('Gemini uses CosmosAsync when available instead of raw browser fetch', asyn
     assert.equal(result.translatedText, 'Xin chao');
     assert.equal(fetchCalls.length, 0);
     assert.equal(cosmosCalls.length, 1);
-    assert.equal(cosmosCalls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent');
+    assert.equal(cosmosCalls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=AIza-test');
     assert.deepEqual(cosmosCalls[0].headers, {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': 'AIza-test'
+        'Content-Type': 'application/json'
     });
     assert.equal(cosmosCalls[0].body.contents[0].parts[0].text.includes('\u3053\u3093\u306b\u3061\u306f'), true);
 });

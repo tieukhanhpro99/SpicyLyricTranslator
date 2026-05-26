@@ -2,9 +2,20 @@ import { warn } from './debug';
 
 const CACHE_KEY_PREFIX = 'slt-track-cache:';
 const CACHE_INDEX_KEY = 'slt-track-cache-index';
+const CACHE_SCHEMA_KEY = 'slt-track-cache-schema';
+const CACHE_SCHEMA_VERSION = 2;
 const CACHE_MAX_TRACKS = 100;
 const CACHE_EXPIRY_DAYS = 14;
 const CACHE_EXPIRY_MS = CACHE_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+
+export interface TrackCacheMetrics {
+    model?: string;
+    durationMs?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    apiCalls?: number;
+}
 
 interface TrackCacheEntry {
     lang: string;
@@ -16,6 +27,7 @@ interface TrackCacheEntry {
     sourceFingerprint?: string;
     trackName?: string;
     artistName?: string;
+    metrics?: TrackCacheMetrics;
 }
 
 interface CacheIndex {
@@ -27,6 +39,38 @@ function getStorage(): typeof localStorage | null {
         return localStorage;
     }
     return null;
+}
+
+let schemaMigrationRun = false;
+function runCacheSchemaMigration(): void {
+    if (schemaMigrationRun) return;
+    const storage = getStorage();
+    if (!storage) {
+        schemaMigrationRun = true;
+        return;
+    }
+
+    try {
+        const stored = storage.getItem(CACHE_SCHEMA_KEY);
+        const storedVersion = stored ? parseInt(stored, 10) : 0;
+        if (storedVersion >= CACHE_SCHEMA_VERSION) {
+            schemaMigrationRun = true;
+            return;
+        }
+
+        for (let i = storage.length - 1; i >= 0; i--) {
+            const key = storage.key(i);
+            if (key && key.startsWith(CACHE_KEY_PREFIX)) {
+                storage.removeItem(key);
+            }
+        }
+        storage.removeItem(CACHE_INDEX_KEY);
+        storage.setItem(CACHE_SCHEMA_KEY, String(CACHE_SCHEMA_VERSION));
+    } catch (e) {
+        warn('Track cache schema migration failed:', e);
+    } finally {
+        schemaMigrationRun = true;
+    }
 }
 
 function getCacheIndex(): CacheIndex {
@@ -188,9 +232,10 @@ function pruneTrackCache(maxTracks = CACHE_MAX_TRACKS): void {
 }
 
 export function getTrackCache(trackUri: string, targetLang: string): TrackCacheEntry | null {
+    runCacheSchemaMigration();
     const storage = getStorage();
     if (!storage || !trackUri) return null;
-    
+
     const cacheKey = getCacheKey(trackUri, targetLang);
     
     try {
@@ -224,25 +269,27 @@ export function getTrackCache(trackUri: string, targetLang: string): TrackCacheE
 }
 
 export function setTrackCache(
-    trackUri: string, 
-    targetLang: string, 
+    trackUri: string,
+    targetLang: string,
     sourceLang: string,
     lines: string[],
     api?: string,
     sourceFingerprint?: string,
     trackName?: string,
     artistName?: string,
-    sourceLines?: string[]
+    sourceLines?: string[],
+    metrics?: TrackCacheMetrics
 ): void {
+    runCacheSchemaMigration();
     const storage = getStorage();
     if (!storage || !trackUri || !lines.length) return;
 
     pruneTrackCache();
-    
+
     const cacheKey = getCacheKey(trackUri, targetLang);
-    
+
     const meta = trackName ? { trackName, artistName } : getCurrentTrackMeta();
-    
+
     const entry: TrackCacheEntry = {
         lang: sourceLang,
         targetLang: targetLang,
@@ -252,7 +299,8 @@ export function setTrackCache(
         api: api,
         sourceFingerprint,
         trackName: meta.trackName,
-        artistName: meta.artistName
+        artistName: meta.artistName,
+        metrics: metrics && (metrics.model || metrics.durationMs || metrics.totalTokens || metrics.apiCalls) ? metrics : undefined
     };
     
     try {
@@ -432,7 +480,7 @@ export function getTrackCacheStats(): {
     };
 }
 
-export function getAllCachedTracks(): Array<{
+export interface CachedTrackSummary {
     trackUri: string;
     targetLang: string;
     sourceLang: string;
@@ -441,21 +489,16 @@ export function getAllCachedTracks(): Array<{
     api?: string;
     trackName?: string;
     artistName?: string;
-}> {
+    metrics?: TrackCacheMetrics;
+}
+
+export function getAllCachedTracks(): CachedTrackSummary[] {
+    runCacheSchemaMigration();
     const storage = getStorage();
     if (!storage) return [];
     pruneTrackCache();
-    
-    const tracks: Array<{
-        trackUri: string;
-        targetLang: string;
-        sourceLang: string;
-        lineCount: number;
-        timestamp: number;
-        api?: string;
-        trackName?: string;
-        artistName?: string;
-    }> = [];
+
+    const tracks: CachedTrackSummary[] = [];
     
     const nativeStorage = typeof localStorage !== 'undefined' ? localStorage : null;
     
@@ -478,7 +521,8 @@ export function getAllCachedTracks(): Array<{
                                     timestamp: entry.timestamp,
                                     api: entry.api,
                                     trackName: entry.trackName,
-                                    artistName: entry.artistName
+                                    artistName: entry.artistName,
+                                    metrics: entry.metrics
                                 });
                             }
                         }
@@ -516,7 +560,8 @@ export function getAllCachedTracks(): Array<{
                     timestamp: entry.timestamp,
                     api: entry.api,
                     trackName: entry.trackName,
-                    artistName: entry.artistName
+                    artistName: entry.artistName,
+                    metrics: entry.metrics
                 });
             }
         } catch (e) {
