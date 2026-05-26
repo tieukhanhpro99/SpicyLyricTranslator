@@ -13,11 +13,7 @@ function normalizeStoredOpenAIModel(model: string | null): string {
 
 function normalizeStoredGeminiModel(model: string | null): string {
     const value = (model || '').trim().replace(/^models\//, '');
-    if (value === 'gemini-3.1-flash-lite' || value === 'gemini-3.5-flash' || value === 'gemini-3.1-pro-preview') return value;
-    if (value.includes('flash-lite')) return 'gemini-3.1-flash-lite';
-    if (value.includes('pro')) return 'gemini-3.1-pro-preview';
-    if (value.includes('flash')) return 'gemini-3.5-flash';
-    return DEFAULT_GEMINI_MODEL;
+    return value || DEFAULT_GEMINI_MODEL;
 }
 
 export interface TranslationQualityMeta {

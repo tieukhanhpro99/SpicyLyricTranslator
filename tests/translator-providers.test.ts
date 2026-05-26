@@ -470,11 +470,11 @@ test('Gemini uses the configured model in the generateContent endpoint', async (
     assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent');
 });
 
-test('Gemini maps old Flash model settings to the new 3.5 Flash endpoint', async () => {
+test('Gemini preserves custom pasted model text in the generateContent endpoint', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {
         geminiApiKey: 'gemini-key',
-        geminiModel: 'gemini-2.5-flash'
+        geminiModel: 'models/gemini-2.5-flash-preview-05-20'
     } as any);
 
     const calls: FetchCall[] = [];
@@ -493,7 +493,7 @@ test('Gemini maps old Flash model settings to the new 3.5 Flash endpoint', async
 
     await translateText('\u3053\u3093\u306b\u3061\u306f', 'vi', 'ja');
 
-    assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent');
+    assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent');
 });
 
 test('Gemini uses the configured temperature in generationConfig', async () => {
@@ -573,7 +573,7 @@ test('Gemini accepts a complete code-fenced batch response without sending chunk
     assert.deepEqual(result.map(item => item.translatedText), translatedLines);
 });
 
-test('Gemini uses CosmosAsync when available instead of raw browser fetch', async () => {
+test('Gemini uses direct Google API fetch even when CosmosAsync is available', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {
         geminiApiKey: 'AIza-test',
@@ -583,7 +583,15 @@ test('Gemini uses CosmosAsync when available instead of raw browser fetch', asyn
     const fetchCalls: FetchCall[] = [];
     (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
         fetchCalls.push({ url, init });
-        throw new Error('direct fetch should not be used when CosmosAsync is available');
+        return jsonResponse({
+            candidates: [
+                {
+                    content: {
+                        parts: [{ text: 'Xin chao' }]
+                    }
+                }
+            ]
+        });
     };
 
     const cosmosCalls: Array<{ url: string; body?: any; headers?: Record<string, string> }> = [];
@@ -607,12 +615,13 @@ test('Gemini uses CosmosAsync when available instead of raw browser fetch', asyn
     const result = await translateText('\u3053\u3093\u306b\u3061\u306f', 'vi', 'ja');
 
     assert.equal(result.translatedText, 'Xin chao');
-    assert.equal(fetchCalls.length, 0);
-    assert.equal(cosmosCalls.length, 1);
-    assert.equal(cosmosCalls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent');
-    assert.deepEqual(cosmosCalls[0].headers, {
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(cosmosCalls.length, 0);
+    assert.equal(fetchCalls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent');
+    assert.deepEqual(fetchCalls[0].init?.headers, {
         'Content-Type': 'application/json',
         'x-goog-api-key': 'AIza-test'
     });
-    assert.equal(cosmosCalls[0].body.contents[0].parts[0].text.includes('\u3053\u3093\u306b\u3061\u306f'), true);
+    const body = JSON.parse(String(fetchCalls[0].init?.body));
+    assert.equal(body.contents[0].parts[0].text.includes('\u3053\u3093\u306b\u3061\u306f'), true);
 });
