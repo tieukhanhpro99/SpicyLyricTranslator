@@ -685,6 +685,40 @@ test('Gemini batch translation persists model/duration/token metrics in the trac
     assert.equal(typeof cached[0].metrics.durationMs, 'number');
 });
 
+test('Gemini uses context-aware song lyrics prompt with strict marker rules', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key'
+    } as any);
+
+    const calls: FetchCall[] = [];
+    (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return jsonResponse({
+            candidates: [
+                {
+                    content: {
+                        parts: [{ text: '[[SLT_BATCH_test_0]]Xin chao' }]
+                    }
+                }
+            ]
+        });
+    };
+
+    await translateText('[[SLT_BATCH_test_0]]Hello', 'vi', 'en');
+
+    const body = JSON.parse(String(calls[0].init?.body));
+    const prompt = body.contents[0].parts[0].text;
+    assert.match(prompt, /Translate the following song lyrics into Vietnamese\./);
+    assert.match(prompt, /Silently infer the whole-song context from the provided lyrics/);
+    assert.match(prompt, /Do not output this analysis/);
+    assert.match(prompt, /do not invent missing story details/);
+    assert.match(prompt, /Preserve every \[\[SLT_BATCH\.\.\.\]\] marker exactly at the start of its corresponding translated line/);
+    assert.match(prompt, /Do not translate, remove, reorder, duplicate, or invent markers/);
+    assert.match(prompt, /Make the translation natural and lyrical in Vietnamese, while preserving meaning/);
+    assert.doesNotMatch(prompt, /Translate the following lyrics to Vietnamese/);
+});
+
 test('Gemini accepts a complete code-fenced batch response without sending chunked follow-up requests', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {

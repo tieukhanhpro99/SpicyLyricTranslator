@@ -982,10 +982,35 @@ function isOpenAISpeedModeModel(model: string): boolean {
     return model === 'gpt-5.5';
 }
 
+function buildSongLyricsTranslationInstruction(langName: string): string {
+    return [
+        'You are a professional song lyrics translator.',
+        '',
+        `Translate the following song lyrics into ${langName}.`,
+        '',
+        'Silently infer the whole-song context from the provided lyrics: speaker, emotional tone, relationship, tense, slang, recurring phrases, cultural references, and chorus meaning. Do not output this analysis. Use only the context available in the provided lyrics; do not invent missing story details.',
+        '',
+        'Rules:',
+        '- Output ONLY the translated lyrics.',
+        '- Preserve every [[SLT_BATCH...]] marker exactly at the start of its corresponding translated line.',
+        '- Do not translate, remove, reorder, duplicate, or invent markers.',
+        '- Preserve line breaks and line order.',
+        '- Translate using full-song context, not isolated lines.',
+        '- Keep repeated lines and choruses consistent.',
+        '- Preserve names, titles, references, repetition, and emotional intensity.',
+        `- Make the translation natural and lyrical in ${langName}, while preserving meaning.`,
+        '- Do not add explanations, notes, markdown, code fences, or extra text.'
+    ].join('\n');
+}
+
+function buildSongLyricsTranslationPrompt(text: string, langName: string): string {
+    return `${buildSongLyricsTranslationInstruction(langName)}\n\n${text}`;
+}
+
 function buildOpenAIChatBody(text: string, langName: string): Record<string, unknown> {
     const model = normalizeOpenAIModelName(openaiModel);
     const useSpeedMode = isOpenAISpeedModeModel(model);
-    const instruction = `You are a song lyrics translator. Translate the given lyrics to ${langName}. Output ONLY the translated text, nothing else. Preserve line breaks. Keep the poetic feel and rhythm where possible.`;
+    const instruction = buildSongLyricsTranslationInstruction(langName);
     const body: Record<string, unknown> = {
         model,
         messages: [
@@ -1048,7 +1073,7 @@ async function translateWithGemini(text: string, targetLang: string): Promise<{ 
                 {
                     parts: [
                         {
-                            text: `You are a song lyrics translator. Translate the following lyrics to ${langName}. Output ONLY the translated text, nothing else. Preserve line breaks. Keep the poetic feel and rhythm where possible.\n\n${text}`
+                            text: buildSongLyricsTranslationPrompt(text, langName)
                         }
                     ]
                 }
@@ -1162,7 +1187,7 @@ function buildCustomSingleBody(text: string, targetLang: string, format: CustomA
             messages: [
                 {
                     role: 'system',
-                    content: `You are a song lyrics translator. Translate the given lyrics to ${langName}. Output ONLY the translated text, nothing else. Preserve line breaks. Keep the poetic feel and rhythm where possible.`
+                    content: buildSongLyricsTranslationInstruction(langName)
                 },
                 {
                     role: 'user',
@@ -1180,7 +1205,7 @@ function buildCustomSingleBody(text: string, targetLang: string, format: CustomA
                 {
                     parts: [
                         {
-                            text: `You are a song lyrics translator. Translate the following lyrics to ${langName}. Output ONLY the translated text, nothing else. Preserve line breaks. Keep the poetic feel and rhythm where possible.\n\n${text}`
+                            text: buildSongLyricsTranslationPrompt(text, langName)
                         }
                     ]
                 }

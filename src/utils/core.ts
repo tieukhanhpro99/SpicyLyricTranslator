@@ -27,6 +27,7 @@ let romanizationToggleButton: Element | null = null;
 let observedLyricsContent: Element | null = null;
 let lastKnownRomanizationState: boolean | null = null;
 let lastTranslatedRomanizationState: boolean | null = null;
+let keyboardShortcutListener: ((e: KeyboardEvent) => void) | null = null;
 const SPICY_LYRICS_CACHE_NAME = 'SpicyLyrics_LyricsStore';
 const romanizationRepairAttempts = new Set<string>();
 
@@ -1453,11 +1454,47 @@ export function setupViewModeObserver(): void {
 }
 
 export function setupKeyboardShortcut(): void {
-    document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (keyboardShortcutListener) {
+        document.removeEventListener('keydown', keyboardShortcutListener);
+    }
+
+    keyboardShortcutListener = (e: KeyboardEvent) => {
         if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 't') {
             e.preventDefault();
             e.stopPropagation();
             if (isSpicyLyricsOpen()) handleTranslateToggle();
         }
-    });
+    };
+
+    document.addEventListener('keydown', keyboardShortcutListener);
+}
+
+export function cleanupCoreRuntime(): void {
+    if (viewControlsObserver) {
+        viewControlsObserver.disconnect();
+        viewControlsObserver = null;
+    }
+    if (lyricsObserver) {
+        lyricsObserver.disconnect();
+        lyricsObserver = null;
+    }
+    if (translateDebounceTimer) {
+        clearTimeout(translateDebounceTimer);
+        translateDebounceTimer = null;
+    }
+    if (viewModeIntervalId) {
+        clearInterval(viewModeIntervalId);
+        viewModeIntervalId = null;
+    }
+    cleanupRomanizationWatcher();
+    if (keyboardShortcutListener) {
+        document.removeEventListener('keydown', keyboardShortcutListener);
+        keyboardShortcutListener = null;
+    }
+    document.querySelectorAll('#TranslateToggle').forEach(button => button.remove());
+    getPIPWindow()?.document.querySelectorAll('#TranslateToggle').forEach(button => button.remove());
+    observedLyricsContent = null;
+    lastKnownRomanizationState = null;
+    lastTranslatedRomanizationState = null;
+    state.isTranslating = false;
 }
