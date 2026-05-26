@@ -3119,7 +3119,8 @@ ${text}`
           text: String(group.Text).trim(),
           startTime: group.StartTime,
           endTime: group.EndTime,
-          isInstrumental: false
+          isInstrumental: false,
+          romanizedText: group.RomanizedText?.trim() || void 0
         });
         continue;
       }
@@ -3130,7 +3131,8 @@ ${text}`
             text: String(leadText).trim(),
             startTime: group.Lead.StartTime,
             endTime: group.Lead.EndTime,
-            isInstrumental: false
+            isInstrumental: false,
+            romanizedText: group.Lead.RomanizedText?.trim() || void 0
           });
           continue;
         }
@@ -3145,7 +3147,8 @@ ${text}`
       text: line.Text?.trim() || "",
       startTime: 0,
       endTime: 0,
-      isInstrumental: false
+      isInstrumental: false,
+      romanizedText: line.RomanizedText?.trim() || void 0
     }));
   }
   function extractLinesData(lyrics) {
@@ -7179,6 +7182,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   var observedLyricsContent = null;
   var lastKnownRomanizationState = null;
   var lastTranslatedRomanizationState = null;
+  var SPICY_LYRICS_CACHE_NAME2 = "SpicyLyrics_LyricsStore";
+  var romanizationRepairAttempts = /* @__PURE__ */ new Set();
   function normalizeMatchKey(text) {
     return (text || "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "").trim();
   }
@@ -7523,6 +7528,18 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   function hasOriginalScript(lines) {
     return Boolean(lines?.some((line) => /[\u3040-\u30FF\u4E00-\u9FFF\u3400-\u4DBF\uAC00-\uD7AF\u1100-\u11FF\u0600-\u06FF\u0590-\u05FF\u0400-\u04FF\u0E00-\u0E7F\u0900-\u097F\u0370-\u03FF]/.test(line || "")));
   }
+  function needsRomanizationCacheRepair(lines, lineData) {
+    if (!hasOriginalScript(lines))
+      return false;
+    return !Boolean(lineData?.some((line) => {
+      const romanized = line.romanizedText?.trim();
+      if (!romanized)
+        return false;
+      if (normalizeMatchKey(romanized) === normalizeMatchKey(line.text))
+        return false;
+      return !hasOriginalScript([romanized]);
+    }));
+  }
   function resolveTranslationSourceLines(input) {
     const domLineTexts = [...input.domLineTexts];
     const cachedOriginalLines = hasOriginalScript(input.cachedSourceLines) ? [...input.cachedSourceLines] : null;
@@ -7571,6 +7588,53 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       apiVocalTexts,
       apiVocalLineData
     };
+  }
+  function getTrackIdFromUri2(trackUri) {
+    if (!trackUri)
+      return null;
+    const parts = trackUri.split(":");
+    return parts[parts.length - 1] || null;
+  }
+  async function deleteCurrentSpicyLyricsCacheEntry(trackUri) {
+    const trackId = getTrackIdFromUri2(trackUri);
+    if (!trackId || typeof caches === "undefined" || typeof caches.open !== "function")
+      return;
+    try {
+      const cache = await caches.open(SPICY_LYRICS_CACHE_NAME2);
+      await cache.delete(`/${trackId}`);
+    } catch (e) {
+      warn("Failed to delete current Spicy Lyrics cache entry:", e);
+    }
+  }
+  function refreshSpicyLyricsCurrentTrack() {
+    try {
+      const execute = globalThis._spicy_lyrics?.execute;
+      if (typeof execute === "function") {
+        execute("reset-ttml");
+        return true;
+      }
+    } catch (e) {
+      warn("Failed to trigger Spicy Lyrics refresh:", e);
+    }
+    return false;
+  }
+  async function repairMissingRomanizationCacheIfNeeded() {
+    if (!isRomanizationActive())
+      return false;
+    const currentTrackUri = getCurrentTrackUri();
+    if (!currentTrackUri || romanizationRepairAttempts.has(currentTrackUri))
+      return false;
+    const result = await fetchLyricsForTrackUri(currentTrackUri);
+    if (!result || !needsRomanizationCacheRepair(result.lines, result.lineData))
+      return false;
+    romanizationRepairAttempts.add(currentTrackUri);
+    clearLyricsCache();
+    await deleteCurrentSpicyLyricsCacheEntry(currentTrackUri);
+    const refreshed = refreshSpicyLyricsCurrentTrack();
+    if (refreshed && state.showNotifications && Spicetify.showNotification) {
+      Spicetify.showNotification("Repairing Spicy Lyrics romanization cache...");
+    }
+    return refreshed;
   }
   function getLyricsFirstLineText() {
     const lines = getLyricsLines();
@@ -8235,6 +8299,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     cleanupRomanizationWatcher();
     const handler = () => {
       setTimeout(async () => {
+        const repaired = await repairMissingRomanizationCacheIfNeeded();
+        if (repaired) {
+          await new Promise((resolve) => setTimeout(resolve, 1800));
+        }
         if (state.isEnabled) {
           for (let i = 0; i < 20 && state.isTranslating; i++) {
             await new Promise((resolve) => setTimeout(resolve, 300));
@@ -8677,7 +8745,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
 
   // src/utils/settings.ts
   var SETTINGS_ID = "spicy-lyric-translator-settings";
-  var SPICY_LYRICS_CACHE_NAME2 = "SpicyLyrics_LyricsStore";
+  var SPICY_LYRICS_CACHE_NAME3 = "SpicyLyrics_LyricsStore";
   function showActionNotification(message, isError = false) {
     if (state.showNotifications && Spicetify.showNotification) {
       Spicetify.showNotification(message, isError);
@@ -8691,7 +8759,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     try {
       clearLyricsCache();
       if (typeof caches !== "undefined" && typeof caches.delete === "function") {
-        await caches.delete(SPICY_LYRICS_CACHE_NAME2);
+        await caches.delete(SPICY_LYRICS_CACHE_NAME3);
       }
       showActionNotification("Spicy Lyrics cached lyrics deleted!");
     } catch (e) {
@@ -9402,7 +9470,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   function escapeHtml2(value) {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  function getTrackIdFromUri2(trackUri) {
+  function getTrackIdFromUri3(trackUri) {
     return trackUri.replace("spotify:track:", "");
   }
   async function playCachedTrack(trackUri) {
@@ -9455,7 +9523,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       }
     }
     try {
-      const trackId = getTrackIdFromUri2(trackUri);
+      const trackId = getTrackIdFromUri3(trackUri);
       if (trackId && Spicetify.Platform?.History?.push) {
         Spicetify.Platform.History.push(`/track/${trackId}`);
         return true;
@@ -9604,7 +9672,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             <button id="slt-lyrics-copy-all" class="slt-lyrics-copy" type="button">Copy Lyrics</button>
             <button id="slt-lyrics-back-to-cache" class="slt-lyrics-back" type="button">&lt; Back to Cache</button>
         </div>
-        <div class="slt-lyrics-header">Track ID: ${escapeHtml2(getTrackIdFromUri2(trackUri))}</div>
+        <div class="slt-lyrics-header">Track ID: ${escapeHtml2(getTrackIdFromUri3(trackUri))}</div>
         <div class="slt-lyrics-grid">
             <div class="slt-lyrics-row">
                 <div class="slt-lyrics-col slt-lyrics-head" id="slt-lyrics-source-heading">${escapeHtml2(sourceLang.toUpperCase())} (Source)</div>
@@ -9637,7 +9705,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     copyBtn?.addEventListener("click", async () => {
       const rows = content.querySelectorAll("#slt-lyrics-rows .slt-lyrics-row");
       const lines = [];
-      const trackTitle = trackCache.trackName || getTrackIdFromUri2(trackUri);
+      const trackTitle = trackCache.trackName || getTrackIdFromUri3(trackUri);
       const trackArtist = trackCache.artistName || "";
       lines.push(`${trackTitle}${trackArtist ? " - " + trackArtist : ""}`);
       lines.push(`${sourceLang.toUpperCase()} -> ${targetLang.toUpperCase()}`);
@@ -9928,7 +9996,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         
         <div class="slt-cache-list" id="slt-cache-list">
             ${cachedTracks.length === 0 ? '<div class="slt-empty-cache">No cached translations</div>' : cachedTracks.sort((a, b) => b.timestamp - a.timestamp).map((track, index) => {
-      const trackId = getTrackIdFromUri2(track.trackUri);
+      const trackId = getTrackIdFromUri3(track.trackUri);
       const displayTitle = track.trackName || `Track ID: ${trackId}`;
       const displayArtist = track.artistName || "";
       return `
@@ -10077,7 +10145,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       let cacheItems = [];
       let totalSize = 0;
       if (typeof caches !== "undefined") {
-        const cache = await caches.open(SPICY_LYRICS_CACHE_NAME2);
+        const cache = await caches.open(SPICY_LYRICS_CACHE_NAME3);
         keys = await cache.keys();
         cacheItems = await Promise.all(keys.map(async (req) => {
           const url = new URL(req.url);
@@ -10394,7 +10462,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
               const url = item.dataset.url;
               if (url && typeof caches !== "undefined") {
                 try {
-                  const cache = await caches.open(SPICY_LYRICS_CACHE_NAME2);
+                  const cache = await caches.open(SPICY_LYRICS_CACHE_NAME3);
                   await cache.delete(url);
                   const itemSize = parseInt(item.dataset.size || "0", 10);
                   currentTotalSize = Math.max(0, currentTotalSize - itemSize);

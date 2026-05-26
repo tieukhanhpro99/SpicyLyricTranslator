@@ -19,9 +19,12 @@ interface VocalGroup {
     Type: 'Vocal' | 'Instrumental';
     OppositeAligned?: boolean;
     Text?: string;
+    RomanizedText?: string;
     StartTime?: number;
     EndTime?: number;
     Lead?: {
+        Text?: string;
+        RomanizedText?: string;
         Syllables: SyllableData[];
         StartTime: number;
         EndTime: number;
@@ -35,6 +38,7 @@ interface VocalGroup {
 
 interface StaticLine {
     Text: string;
+    RomanizedText?: string;
 }
 
 interface LyricsData {
@@ -335,6 +339,7 @@ function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
                 startTime: group.StartTime,
                 endTime: group.EndTime,
                 isInstrumental: false,
+                romanizedText: group.RomanizedText?.trim() || undefined,
             });
             continue;
         }
@@ -347,6 +352,7 @@ function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
                     startTime: group.Lead.StartTime,
                     endTime: group.Lead.EndTime,
                     isInstrumental: false,
+                    romanizedText: group.Lead.RomanizedText?.trim() || undefined,
                 });
                 continue;
             }
@@ -364,7 +370,8 @@ function extractStaticLinesData(lyrics: LyricsData): LyricLineData[] {
         text: line.Text?.trim() || '',
         startTime: 0,
         endTime: 0,
-        isInstrumental: false
+        isInstrumental: false,
+        romanizedText: line.RomanizedText?.trim() || undefined,
     }));
 }
 
