@@ -25,6 +25,7 @@ import {
 } from './core';
 
 const RUNTIME_KEY = '__spicyLyricTranslatorRuntime';
+let initialized = false;
 
 type RuntimeHandle = {
     version: string;
@@ -42,6 +43,8 @@ function cleanupPreviousRuntime(): void {
 }
 
 export async function initialize(): Promise<void> {
+    if (initialized) return;
+    initialized = true;
     cleanupPreviousRuntime();
 
     while (typeof Spicetify === 'undefined' || !Spicetify.Platform) {
@@ -61,6 +64,7 @@ export async function initialize(): Promise<void> {
             cleanupCoreRuntime();
             cleanupConnectionIndicator();
             stopUpdateChecker();
+            initialized = false;
             if ((window as any).SpicyLyricTranslator?.version === VERSION) {
                 delete (window as any).SpicyLyricTranslator;
             }
@@ -79,7 +83,8 @@ export async function initialize(): Promise<void> {
         openaiModel: state.openaiModel,
         geminiApiKey: state.geminiApiKey,
         geminiModel: state.geminiModel,
-        geminiTemperature: state.geminiTemperature
+        geminiTemperature: state.geminiTemperature,
+        maxParallelChunks: state.maxParallelChunks
     });
     injectStyles();
     initConnectionIndicator();

@@ -134,6 +134,42 @@ test('romanization mode pads missing API lines with empty text instead of DOM ro
     assert.equal(result.apiVocalLineData?.[1]?.text, '');
 });
 
+test('romanization mode keeps full API lyrics when Spicy Lyrics virtualizes visible DOM lines', () => {
+    const originalLines = ['\u4eca\u65e5', '\u306f', '\u7d20\u6674\u3089\u3057\u3044', '\u65e5'];
+    const visibleRomanizedLines = ['subarashii', 'hi'];
+    const apiLineData = originalLines.map((line, index) => vocalLine(line, ['kyou', 'wa', 'subarashii', 'hi'][index]));
+
+    const result = resolveTranslationSourceLines({
+        domLineTexts: visibleRomanizedLines,
+        romanizationOn: true,
+        apiVocalTexts: originalLines,
+        apiVocalLineData: apiLineData,
+        virtualizedDom: true
+    });
+
+    assert.equal(result.canTranslate, true);
+    assert.equal(result.useApiLines, true);
+    assert.deepEqual(result.lineTexts, originalLines);
+    assert.equal(result.apiVocalLineData?.length, originalLines.length);
+});
+
+test('non-romanized virtualized DOM prefers full API lyrics over partial visible DOM text', () => {
+    const originalLines = ['\u4eca\u65e5', '\u306f', '\u7d20\u6674\u3089\u3057\u3044', '\u65e5'];
+    const visibleLines = ['\u7d20\u6674\u3089\u3057\u3044', '\u65e5'];
+
+    const result = resolveTranslationSourceLines({
+        domLineTexts: visibleLines,
+        romanizationOn: false,
+        apiVocalTexts: originalLines,
+        apiVocalLineData: originalLines.map(line => vocalLine(line)),
+        virtualizedDom: true
+    });
+
+    assert.equal(result.canTranslate, true);
+    assert.equal(result.useApiLines, true);
+    assert.deepEqual(result.lineTexts, originalLines);
+});
+
 test('detects script lyrics missing romanization data as repairable Spicy Lyrics cache', () => {
     assert.equal(
         needsRomanizationCacheRepair(

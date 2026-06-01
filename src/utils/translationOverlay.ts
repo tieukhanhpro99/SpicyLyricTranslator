@@ -174,6 +174,31 @@ function getLyricLines(doc: Document): NodeListOf<Element> {
     return doc.querySelectorAll(`.SpicyLyricsScrollContainer .line${excludeSelector}, .LyricsContent .line${excludeSelector}, .LyricsContainer .line${excludeSelector}`);
 }
 
+function parseNonNegativeIndex(value: string | null | undefined): number | null {
+    if (!value) return null;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function getLineElementIndex(line: Element, fallbackIndex: number): number {
+    const ownDataset = (line as HTMLElement).dataset;
+    const ownIndex = parseNonNegativeIndex(ownDataset.sltIndex || ownDataset.lineIndex);
+    if (ownIndex !== null) return ownIndex;
+
+    const wrapper = line.closest('[data-index]') as HTMLElement | null;
+    const wrapperIndex = parseNonNegativeIndex(wrapper?.dataset.index);
+    return wrapperIndex ?? fallbackIndex;
+}
+
+function getLineByElementIndex(lines: NodeListOf<Element>, targetIndex: number): HTMLElement | null {
+    for (let i = 0; i < lines.length; i++) {
+        if (getLineElementIndex(lines[i], i) === targetIndex) {
+            return lines[i] as HTMLElement;
+        }
+    }
+    return null;
+}
+
 function findLyricsContainer(doc: Document): Element | null {
     const pipWrapper = doc.querySelector('.spicy-pip-wrapper');
     if (pipWrapper) {
@@ -301,7 +326,8 @@ function applyReplaceMode(doc: Document): void {
     const learningMode = isLearningModeActive();
 
     lines.forEach((line, index) => {
-        const translation = translationMap.get(index);
+        const lineIndex = getLineElementIndex(line, index);
+        const translation = translationMap.get(lineIndex);
         if (!translation) return;
 
         const originalText = extractLineText(line);
@@ -309,11 +335,11 @@ function applyReplaceMode(doc: Document): void {
 
         if (!line.parentNode) return;
 
-        const timingInfoEarly = lineTimingData[index];
+        const timingInfoEarly = lineTimingData[lineIndex];
         const isBreakEarly = !originalText.trim() || /^[♪♫•\-–—\s]+$/.test(originalText.trim());
-        const hasRomanization = !!romanizationMap.get(index);
-        const hasApiOriginal = !!originalTextMap.get(index);
-        const domIsRomanized = domLineIsRomanized(line, index);
+        const hasRomanization = !!romanizationMap.get(lineIndex);
+        const hasApiOriginal = !!originalTextMap.get(lineIndex);
+        const domIsRomanized = domLineIsRomanized(line, lineIndex);
         const learningActive = learningMode && hasRomanization && !(timingInfoEarly?.isInstrumental || isBreakEarly);
         const showInjectedOriginal = learningActive && domIsRomanized && hasApiOriginal;
         const keepDomVisible = learningActive && !domIsRomanized;
@@ -321,16 +347,16 @@ function applyReplaceMode(doc: Document): void {
         if (!keepDomVisible) {
             line.classList.add('slt-replace-hidden');
         }
-        (line as HTMLElement).dataset.sltIndex = index.toString();
+        (line as HTMLElement).dataset.sltIndex = lineIndex.toString();
         
         const replaceEl = doc.createElement('div');
         replaceEl.className = 'slt-replace-line slt-sync-translation';
-        replaceEl.dataset.lineIndex = index.toString();
-        replaceEl.dataset.forLine = index.toString();
+        replaceEl.dataset.lineIndex = lineIndex.toString();
+        replaceEl.dataset.forLine = lineIndex.toString();
         replaceEl.dataset.lyricsType = lyricsType;
         
         const isBreak = !originalText.trim() || /^[♪♫•\-–—\s]+$/.test(originalText.trim());
-        const timingInfo = lineTimingData[index];
+        const timingInfo = lineTimingData[lineIndex];
         const isInstrumental = timingInfo?.isInstrumental || isBreak;
         
         if (isInstrumental) {
@@ -340,9 +366,9 @@ function applyReplaceMode(doc: Document): void {
             const vocabEnabled = storage.get('vocabulary-mode') === 'true';
             let pairBelowText = originalText;
             if (domIsRomanized) {
-                pairBelowText = originalTextMap.get(index) || originalText;
+                pairBelowText = originalTextMap.get(lineIndex) || originalText;
             } else {
-                pairBelowText = romanizationMap.get(index) || originalTextMap.get(index) || originalText;
+                pairBelowText = romanizationMap.get(lineIndex) || originalTextMap.get(lineIndex) || originalText;
             }
             if (vocabEnabled) {
                 replaceEl.classList.add('slt-vocab-line');
@@ -384,7 +410,7 @@ function applyReplaceMode(doc: Document): void {
             replaceEl.classList.add('active');
         }
         
-        const qualityIndicator = createQualityIndicator(doc, index);
+        const qualityIndicator = createQualityIndicator(doc, lineIndex);
         if (qualityIndicator) {
             replaceEl.appendChild(qualityIndicator);
         }
@@ -392,7 +418,7 @@ function applyReplaceMode(doc: Document): void {
         line.parentNode.insertBefore(replaceEl, line.nextSibling);
 
         if (showInjectedOriginal) {
-            const origEl = buildOriginalLine(doc, index, timingInfo, line);
+            const origEl = buildOriginalLine(doc, lineIndex, timingInfo, line);
             if (origEl) {
                 line.parentNode.insertBefore(origEl, line);
             }
@@ -1025,7 +1051,8 @@ function applyInterleavedMode(doc: Document): void {
 
         lines.forEach((line, index) => {
             try {
-                const translation = translationMap.get(index);
+                const lineIndex = getLineElementIndex(line, index);
+                const translation = translationMap.get(lineIndex);
                 const originalText = extractLineText(line);
 
                 const isBreak = !originalText.trim() || /^[♪♫•\-–—\s]+$/.test(originalText.trim());
@@ -1037,14 +1064,14 @@ function applyInterleavedMode(doc: Document): void {
                     return;
                 }
 
-                const hasRomanization = !!romanizationMap.get(index);
-                const hasApiOriginal = !!originalTextMap.get(index);
-                const domIsRomanized = domLineIsRomanized(line, index);
+                const hasRomanization = !!romanizationMap.get(lineIndex);
+                const hasApiOriginal = !!originalTextMap.get(lineIndex);
+                const domIsRomanized = domLineIsRomanized(line, lineIndex);
                 const learningActive = learningMode && hasRomanization && !isBreak;
                 const showInjectedOriginal = learningActive && domIsRomanized && hasApiOriginal;
 
                 line.classList.add('slt-overlay-parent');
-                (line as HTMLElement).dataset.sltIndex = index.toString();
+                (line as HTMLElement).dataset.sltIndex = lineIndex.toString();
 
                 if (showInjectedOriginal) {
                     line.classList.add('slt-learning-hidden');
@@ -1054,15 +1081,15 @@ function applyInterleavedMode(doc: Document): void {
 
                 const translationEl = doc.createElement('div');
                 translationEl.className = 'slt-interleaved-translation';
-                translationEl.dataset.forLine = index.toString();
-                translationEl.dataset.lineIndex = index.toString();
+                translationEl.dataset.forLine = lineIndex.toString();
+                translationEl.dataset.lineIndex = lineIndex.toString();
 
                 const isVocabMode = storage.get('vocabulary-mode') === 'true';
                 let pairBelowText = originalText;
                 if (domIsRomanized) {
-                    pairBelowText = originalTextMap.get(index) || originalText;
+                    pairBelowText = originalTextMap.get(lineIndex) || originalText;
                 } else {
-                    pairBelowText = romanizationMap.get(index) || originalTextMap.get(index) || originalText;
+                    pairBelowText = romanizationMap.get(lineIndex) || originalTextMap.get(lineIndex) || originalText;
                 }
 
                 if (isBreak) {
@@ -1081,7 +1108,7 @@ function applyInterleavedMode(doc: Document): void {
                     }
                 }
                 
-                const timingInfo = lineTimingData[index];
+                const timingInfo = lineTimingData[lineIndex];
                 if (timingInfo) {
                     translationEl.dataset.startTime = timingInfo.startTime.toString();
                     translationEl.dataset.endTime = timingInfo.endTime.toString();
@@ -1089,7 +1116,7 @@ function applyInterleavedMode(doc: Document): void {
                 
                 if (isLineActive(line)) translationEl.classList.add('active');
                 
-                const qualityIndicator = createQualityIndicator(doc, index);
+                const qualityIndicator = createQualityIndicator(doc, lineIndex);
                 if (qualityIndicator) {
                     translationEl.appendChild(qualityIndicator);
                 }
@@ -1097,7 +1124,7 @@ function applyInterleavedMode(doc: Document): void {
                 line.parentNode.insertBefore(translationEl, line.nextSibling);
 
                 if (showInjectedOriginal) {
-                    const origEl = buildOriginalLine(doc, index, timingInfo, line);
+                    const origEl = buildOriginalLine(doc, lineIndex, timingInfo, line);
                     if (origEl) {
                         line.parentNode.insertBefore(origEl, line);
                     }
@@ -1449,9 +1476,9 @@ function updateWordSyncStates(doc: Document): void {
     doc.querySelectorAll('.slt-sync-translation').forEach((transLine) => {
         const transLineEl = transLine as HTMLElement;
         const lineIndex = parseInt(transLineEl.dataset.lineIndex || '-1');
-        if (lineIndex < 0 || lineIndex >= lines.length) return;
+        if (lineIndex < 0) return;
 
-        const originalLine = lines[lineIndex] as HTMLElement;
+        const originalLine = getLineByElementIndex(lines, lineIndex);
         if (!originalLine) return;
 
         const originalGradient = originalLine.style.getPropertyValue('--gradient-position').trim();
@@ -1610,7 +1637,7 @@ function onActiveLineChanged(doc: Document): void {
             let currentActiveIndex = -1;
             for (let i = 0; i < cache.lines.length; i++) {
                 if (isLineActive(cache.lines[i])) {
-                    currentActiveIndex = i;
+                    currentActiveIndex = getLineElementIndex(cache.lines[i], i);
                     break;
                 }
             }
@@ -1656,7 +1683,12 @@ function syncLoop(): void {
         activeSyncRafId = null;
         return;
     }
-    
+
+    if (translationMap.size === 0) {
+        activeSyncRafId = requestAnimationFrame(syncLoop);
+        return;
+    }
+
     try {
         onActiveLineChanged(document);
         updateWordSyncStates(document);

@@ -417,6 +417,26 @@ function getLyricsLines(): NodeListOf<Element> {
     return document.querySelectorAll('.non-existent-selector');
 }
 
+function parseNonNegativeIndex(value: string | null | undefined): number | null {
+    if (!value) return null;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function getLyricElementIndex(line: Element, fallbackIndex: number): number {
+    const ownDataset = (line as HTMLElement).dataset;
+    const ownIndex = parseNonNegativeIndex(ownDataset.sltIndex || ownDataset.lineIndex);
+    if (ownIndex !== null) return ownIndex;
+
+    const wrapper = line.closest('[data-index]') as HTMLElement | null;
+    const wrapperIndex = parseNonNegativeIndex(wrapper?.dataset.index);
+    return wrapperIndex ?? fallbackIndex;
+}
+
+function hasVirtualizedLineIndexes(lines: NodeListOf<Element> | Element[]): boolean {
+    return Array.from(lines).some((line, index) => getLyricElementIndex(line, index) !== index);
+}
+
 type MissingOriginalReason = 'missing-original-lyrics';
 
 interface TranslationSourceSelectionInput {
@@ -425,6 +445,7 @@ interface TranslationSourceSelectionInput {
     apiVocalTexts: string[] | null;
     apiVocalLineData: LyricLineData[] | null;
     cachedSourceLines?: string[] | null;
+    virtualizedDom?: boolean;
 }
 
 interface TranslationSourceSelection {
@@ -466,6 +487,7 @@ export function resolveTranslationSourceLines(input: TranslationSourceSelectionI
     let apiVocalLineData = input.apiVocalLineData
         ? [...input.apiVocalLineData]
         : cachedOriginalLines?.map(line => ({ ...emptyLineData(), text: line })) || null;
+    const virtualizedDom = input.virtualizedDom === true;
 
     if (input.romanizationOn) {
         if (!apiVocalTexts || apiVocalTexts.length === 0) {
@@ -480,10 +502,10 @@ export function resolveTranslationSourceLines(input: TranslationSourceSelectionI
         }
 
         const domCount = domLineTexts.length;
-        if (domCount > 0 && apiVocalTexts.length > domCount) {
+        if (!virtualizedDom && domCount > 0 && apiVocalTexts.length > domCount) {
             apiVocalTexts = apiVocalTexts.slice(0, domCount);
             if (apiVocalLineData) apiVocalLineData = apiVocalLineData.slice(0, domCount);
-        } else if (domCount > 0 && apiVocalTexts.length < domCount) {
+        } else if (!virtualizedDom && domCount > 0 && apiVocalTexts.length < domCount) {
             for (let i = apiVocalTexts.length; i < domCount; i++) {
                 apiVocalTexts.push('');
                 if (apiVocalLineData) {
@@ -503,7 +525,7 @@ export function resolveTranslationSourceLines(input: TranslationSourceSelectionI
         };
     }
 
-    const useApiLines = Boolean(apiVocalTexts && apiVocalTexts.length === domLineTexts.length);
+    const useApiLines = Boolean(apiVocalTexts && (apiVocalTexts.length === domLineTexts.length || virtualizedDom));
     const lineTexts = useApiLines ? apiVocalTexts! : domLineTexts;
     return {
         canTranslate: lineTexts.some(text => text.trim().length > 0),
@@ -639,6 +661,7 @@ export async function translateCurrentLyrics(): Promise<void> {
     
     let lines = getLyricsLines();
     if (lines.length === 0) return;
+    let virtualizedDom = hasVirtualizedLineIndexes(lines);
     
     state.isTranslating = true;
     let buttonsLoading = false;
@@ -713,18 +736,19 @@ export async function translateCurrentLyrics(): Promise<void> {
             }
         }
         
-        let useApiLines = Boolean(apiVocalTexts && apiVocalTexts.length === lines.length);
+        let useApiLines = Boolean(apiVocalTexts && (apiVocalTexts.length === lines.length || virtualizedDom));
         
         if (!useApiLines && romanizationOn && apiVocalTexts && apiVocalTexts.length > 0) {
-            for (let retryAttempt = 0; retryAttempt < 4; retryAttempt++) {
+            for (let retryAttempt = 0; retryAttempt < 2; retryAttempt++) {
                 await new Promise(resolve => setTimeout(resolve, 400));
                 lines = getLyricsLines();
+                virtualizedDom = hasVirtualizedLineIndexes(lines);
                 if (lines.length === 0) break;
                 
                 domLineTexts = [];
                 lines.forEach(line => domLineTexts.push(extractLineText(line)));
                 
-                if (apiVocalTexts.length === lines.length) {
+                if (apiVocalTexts.length === lines.length || virtualizedDom) {
                     useApiLines = true;
                     break;
                 }
@@ -737,7 +761,8 @@ export async function translateCurrentLyrics(): Promise<void> {
             romanizationOn,
             apiVocalTexts,
             apiVocalLineData,
-            cachedSourceLines
+            cachedSourceLines,
+            virtualizedDom
         });
 
         if (!sourceSelection.canTranslate) {
@@ -753,15 +778,16 @@ export async function translateCurrentLyrics(): Promise<void> {
         useApiLines = sourceSelection.useApiLines;
 
         if (!romanizationOn && !useApiLines && apiVocalTexts && apiVocalTexts.length > 0) {
-            for (let retryAttempt = 0; retryAttempt < 8; retryAttempt++) {
+            for (let retryAttempt = 0; retryAttempt < 3; retryAttempt++) {
                 await new Promise(resolve => setTimeout(resolve, 600));
                 lines = getLyricsLines();
+                virtualizedDom = hasVirtualizedLineIndexes(lines);
                 if (lines.length === 0) break;
                 
                 domLineTexts = [];
                 lines.forEach(line => domLineTexts.push(extractLineText(line)));
                 
-                if (apiVocalTexts.length === lines.length) {
+                if (apiVocalTexts.length === lines.length || virtualizedDom) {
                     useApiLines = true;
                     break;
                 }
@@ -778,7 +804,8 @@ export async function translateCurrentLyrics(): Promise<void> {
                 romanizationOn,
                 apiVocalTexts,
                 apiVocalLineData,
-                cachedSourceLines
+                cachedSourceLines,
+                virtualizedDom
             });
             apiVocalTexts = sourceSelection.apiVocalTexts;
             apiVocalLineData = sourceSelection.apiVocalLineData;
@@ -1000,21 +1027,23 @@ export async function translateCurrentLyrics(): Promise<void> {
             const originalByIdx = new Map<number, string>();
 
             const targetArr = Array.from(targetLines);
-            const allowIndexFallback = targetArr.length === translations.length;
 
             targetArr.forEach((line, domIdx) => {
+                const lineIndex = getLyricElementIndex(line, domIdx);
                 const domText = extractLineText(line);
                 if (!domText) return;
 
                 let translation = lookupWithFallback(translationByContent, domText);
-                if (!translation && allowIndexFallback && translations[domIdx]) {
+                if (!translation && translations[lineIndex]) {
+                    translation = translations[lineIndex].translatedText;
+                } else if (!translation && translations[domIdx]) {
                     translation = translations[domIdx].translatedText;
                 }
-                if (translation) translationsByIdx.set(domIdx, translation);
+                if (translation) translationsByIdx.set(lineIndex, translation);
 
                 let meta = lookupWithFallback(qualityByContent, domText);
-                if (!meta && allowIndexFallback) {
-                    const result = translations[domIdx];
+                if (!meta) {
+                    const result = translations[lineIndex] || translations[domIdx];
                     if (result?.wasTranslated) {
                         meta = {
                             source: result.source || 'api',
@@ -1023,19 +1052,23 @@ export async function translateCurrentLyrics(): Promise<void> {
                         };
                     }
                 }
-                if (meta) qualityByIdx.set(domIdx, meta);
+                if (meta) qualityByIdx.set(lineIndex, meta);
 
                 let rom = lookupWithFallback(romanizationByContent, domText);
-                if (!rom && allowIndexFallback && apiVocalLineData && apiVocalLineData[domIdx]?.romanizedText) {
+                if (!rom && apiVocalLineData && apiVocalLineData[lineIndex]?.romanizedText) {
+                    rom = apiVocalLineData[lineIndex].romanizedText;
+                } else if (!rom && apiVocalLineData && apiVocalLineData[domIdx]?.romanizedText) {
                     rom = apiVocalLineData[domIdx].romanizedText;
                 }
-                if (rom) romanizationByIdx.set(domIdx, rom);
+                if (rom) romanizationByIdx.set(lineIndex, rom);
 
                 let orig = lookupWithFallback(originalByContent, domText);
-                if (!orig && allowIndexFallback && apiVocalLineData && apiVocalLineData[domIdx]?.text) {
+                if (!orig && apiVocalLineData && apiVocalLineData[lineIndex]?.text) {
+                    orig = apiVocalLineData[lineIndex].text;
+                } else if (!orig && apiVocalLineData && apiVocalLineData[domIdx]?.text) {
                     orig = apiVocalLineData[domIdx].text;
                 }
-                if (orig) originalByIdx.set(domIdx, orig);
+                if (orig) originalByIdx.set(lineIndex, orig);
             });
 
             state._translationsByIndex = translationsByIdx;
@@ -1150,7 +1183,8 @@ function looseLatinSkeleton(text: string): string {
 function applyTranslations(lines: NodeListOf<Element>): void {
     const translationMapByIndex = new Map<number, string>();
     lines.forEach((line, index) => {
-        let translatedText = state._translationsByIndex?.get(index);
+        const lineIndex = getLyricElementIndex(line, index);
+        let translatedText = state._translationsByIndex?.get(lineIndex);
         if (!translatedText) {
             const originalText = extractLineText(line);
             translatedText = state.translatedLyrics.get(originalText);
@@ -1167,7 +1201,7 @@ function applyTranslations(lines: NodeListOf<Element>): void {
         if (bothLatin && looseLatinSkeleton(translatedText) === looseLatinSkeleton(originalText)) {
             return;
         }
-        translationMapByIndex.set(index, translatedText);
+        translationMapByIndex.set(lineIndex, translatedText);
     });
     
     if (!isOverlayActive()) {

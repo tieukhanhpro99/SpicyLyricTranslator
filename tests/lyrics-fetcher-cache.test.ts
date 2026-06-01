@@ -14,7 +14,7 @@ const trackUri = `spotify:track:${trackId}`;
     }
 };
 
-function installSpicyLyricsCache(content: any): void {
+function installSpicyLyricsCache(content: any, cacheVersion = 12): void {
     (globalThis as any).caches = {
         open: async (name: string) => {
             assert.equal(name, 'SpicyLyrics_LyricsStore');
@@ -24,7 +24,7 @@ function installSpicyLyricsCache(content: any): void {
                     return {
                         json: async () => ({
                             ExpiresAt: Date.now() + 60_000,
-                            CacheVersion: 12,
+                            CacheVersion: cacheVersion,
                             Content: content
                         })
                     };
@@ -130,4 +130,66 @@ test('preserves static romanized text from Spicy Lyrics cache', async () => {
 
     assert.deepEqual(result?.lines, ['\u541b\u306f\u4e16\u754c']);
     assert.equal(result?.lineData[0]?.romanizedText, 'kimi wa sekai');
+});
+
+test('reads Spicy Lyrics 6 transliterated syllable fields from cache version 13', async () => {
+    clearLyricsCache();
+    installSpicyLyricsCache({
+        id: trackId,
+        Type: 'Syllable',
+        LanguageISO2: 'ja',
+        Content: [
+            {
+                Type: 'Vocal',
+                Lead: {
+                    StartTime: 0,
+                    EndTime: 1000,
+                    Syllables: [
+                        {
+                            Text: '\u4eca\u65e5',
+                            TransliteratedText: 'kyou',
+                            StartTime: 0,
+                            EndTime: 500,
+                            IsPartOfWord: false
+                        },
+                        {
+                            Text: '\u306f',
+                            TransliteratedText: 'wa',
+                            StartTime: 500,
+                            EndTime: 1000,
+                            IsPartOfWord: false
+                        }
+                    ]
+                }
+            }
+        ]
+    }, 13);
+
+    const result = await fetchLyricsForTrackUri(trackUri);
+
+    assert.deepEqual(result?.lines, ['\u4eca\u65e5 \u306f']);
+    assert.equal(result?.lineData[0]?.romanizedText, 'kyou wa');
+});
+
+test('reads Spicy Lyrics 6 transliterated line fields from cache version 13', async () => {
+    clearLyricsCache();
+    installSpicyLyricsCache({
+        id: trackId,
+        Type: 'Line',
+        LanguageISO2: 'ja',
+        Content: [
+            {
+                Type: 'Vocal',
+                Text: '\u4eca\u65e5\u306f',
+                TransliteratedText: 'kyou wa',
+                StartTime: 0,
+                EndTime: 1000
+            }
+        ]
+    }, 13);
+
+    const result = await fetchLyricsForTrackUri(trackUri);
+
+    assert.deepEqual(result?.lines, ['\u4eca\u65e5\u306f']);
+    assert.equal(result?.lineData[0]?.romanizedText, 'kyou wa');
 });

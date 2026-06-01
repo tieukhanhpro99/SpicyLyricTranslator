@@ -4,14 +4,16 @@ import { normalizeLanguageCode } from './languageDetection';
 const SPICY_API_HOST = 'api.spicylyrics.org';
 const SPICY_QUERY_PATH = '/query';
 const SPICY_LYRICS_CACHE_NAME = 'SpicyLyrics_LyricsStore';
-const SPICY_LYRICS_CACHE_VERSION = 12;
+const SPICY_LYRICS_CACHE_VERSION = 13;
+const MAX_CAPTURE_CACHE_ENTRIES = 50;
 
 interface SyllableData {
     Text: string;
     StartTime: number;
     EndTime: number;
-    IsPartOfWord: boolean;
+    IsPartOfWord?: boolean;
     RomanizedText?: string;
+    TransliteratedText?: string;
 }
 
 
@@ -20,11 +22,13 @@ interface VocalGroup {
     OppositeAligned?: boolean;
     Text?: string;
     RomanizedText?: string;
+    TransliteratedText?: string;
     StartTime?: number;
     EndTime?: number;
     Lead?: {
         Text?: string;
         RomanizedText?: string;
+        TransliteratedText?: string;
         Syllables: SyllableData[];
         StartTime: number;
         EndTime: number;
@@ -39,6 +43,7 @@ interface VocalGroup {
 interface StaticLine {
     Text: string;
     RomanizedText?: string;
+    TransliteratedText?: string;
 }
 
 interface LyricsData {
@@ -47,6 +52,7 @@ interface LyricsData {
     Lines?: StaticLine[];
     Language?: string;
     LanguageISO2?: string;
+    HasTransliterations?: boolean;
     id?: string;
     alternative_api?: boolean;
 }
@@ -88,8 +94,143 @@ interface SpicyLyricsCacheItem {
     Value?: string;
 }
 
+type JSONPrimitive = string | number | boolean | null;
+type JSONValue = JSONPrimitive | JSONValue[] | { [key: string]: JSONValue };
+
 const captureCache = new Map<string, LyricsData>();
 let interceptorInstalled = false;
+
+function getRomanizedText(value: { RomanizedText?: string; TransliteratedText?: string } | null | undefined): string | undefined {
+    const text = value?.TransliteratedText ?? value?.RomanizedText;
+    return typeof text === 'string' && text.trim() ? text.trim() : undefined;
+}
+
+function unpackSpicyLyricsPayload(packed: unknown): unknown | null {
+    try {
+        if (!Array.isArray(packed) || packed.length !== 2) return null;
+        const valuesRaw = packed[0];
+        const streamRaw = packed[1];
+        if (!Array.isArray(valuesRaw) || !Array.isArray(streamRaw)) return null;
+        if (valuesRaw.length > (1 << 22) || streamRaw.length > (1 << 24)) return null;
+
+        for (const value of valuesRaw) {
+            if (value === null) continue;
+            const valueType = typeof value;
+            if (valueType === 'string' || valueType === 'boolean') continue;
+            if (valueType === 'number' && Number.isFinite(value)) continue;
+            return null;
+        }
+
+        const values = valuesRaw as JSONPrimitive[];
+        const stream = streamRaw as unknown[];
+        let cursor = 0;
+        const forbiddenKeys = new Set(['__proto__', 'constructor', 'prototype']);
+
+        const readStream = (): unknown => {
+            if (cursor >= stream.length) throw new Error('Unexpected end of packed lyrics stream');
+            return stream[cursor++];
+        };
+
+        const resolvePointer = (ptr: unknown): JSONPrimitive => {
+            if (typeof ptr !== 'number' || !Number.isInteger(ptr) || ptr < 0 || ptr >= values.length) {
+                throw new Error('Invalid packed lyrics pointer');
+            }
+            return values[ptr];
+        };
+
+        const readKey = (): string => {
+            const key = resolvePointer(readStream());
+            if (typeof key !== 'string' || forbiddenKeys.has(key)) {
+                throw new Error('Invalid packed lyrics key');
+            }
+            return key;
+        };
+
+        const readCount = (max: number): number => {
+            const count = readStream();
+            if (typeof count !== 'number' || !Number.isInteger(count) || count < 0 || count > max) {
+                throw new Error('Invalid packed lyrics count');
+            }
+            return count;
+        };
+
+        const safeSet = (obj: Record<string, JSONValue>, key: string, value: JSONValue): void => {
+            Object.defineProperty(obj, key, {
+                value,
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            });
+        };
+
+        const decode = (depth: number): JSONValue => {
+            if (depth > 512) throw new Error('Packed lyrics depth limit exceeded');
+            const op = readStream();
+            if (typeof op !== 'number' || !Number.isInteger(op)) {
+                throw new Error('Invalid packed lyrics opcode');
+            }
+            if (op >= 0) return resolvePointer(op);
+
+            switch (op) {
+                case -1: {
+                    const keyCount = readCount(1 << 16);
+                    const keys = new Array<string>(keyCount);
+                    for (let i = 0; i < keyCount; i++) keys[i] = readKey();
+                    const obj: Record<string, JSONValue> = {};
+                    for (let i = 0; i < keyCount; i++) safeSet(obj, keys[i], decode(depth + 1));
+                    return obj;
+                }
+                case -2: {
+                    const length = readCount(1 << 20);
+                    const arr = new Array<JSONValue>(length);
+                    for (let i = 0; i < length; i++) arr[i] = decode(depth + 1);
+                    return arr;
+                }
+                case -3: {
+                    const length = readCount(1 << 20);
+                    const keyCount = readCount(1 << 16);
+                    if (length * keyCount > (1 << 22)) throw new Error('Packed lyrics schema budget exceeded');
+                    const keys = new Array<string>(keyCount);
+                    for (let i = 0; i < keyCount; i++) keys[i] = readKey();
+                    const arr = new Array<JSONValue>(length);
+                    for (let i = 0; i < length; i++) {
+                        const obj: Record<string, JSONValue> = {};
+                        for (let k = 0; k < keyCount; k++) safeSet(obj, keys[k], decode(depth + 1));
+                        arr[i] = obj;
+                    }
+                    return arr;
+                }
+                case -4:
+                    return [];
+                case -5:
+                    return [decode(depth + 1)];
+                case -6:
+                    return {};
+                default:
+                    throw new Error('Unknown packed lyrics opcode');
+            }
+        };
+
+        const result = decode(0);
+        return cursor === stream.length ? result : null;
+    } catch (err) {
+        warn('Failed to unpack Spicy Lyrics payload:', err);
+        return null;
+    }
+}
+
+function setCaptureCache(trackId: string, data: LyricsData): void {
+    if (captureCache.has(trackId)) {
+        captureCache.delete(trackId);
+    }
+    captureCache.set(trackId, data);
+    if (captureCache.size > MAX_CAPTURE_CACHE_ENTRIES) {
+        const oldest = captureCache.keys().next().value;
+        if (oldest !== undefined) {
+            captureCache.delete(oldest);
+        }
+    }
+}
 
 function isLyricsData(obj: any): obj is LyricsData {
     if (!obj || typeof obj !== 'object') return false;
@@ -98,6 +239,21 @@ function isLyricsData(obj: any): obj is LyricsData {
     }
     if (Array.isArray(obj.Content) || Array.isArray(obj.Lines)) return true;
     return false;
+}
+
+function normalizeCapturedLyricsData(data: unknown): LyricsData | null {
+    if (isLyricsData(data)) return data;
+
+    if (typeof data === 'string') {
+        try {
+            return normalizeCapturedLyricsData(JSON.parse(data));
+        } catch {
+            return null;
+        }
+    }
+
+    const unpacked = unpackSpicyLyricsPayload(data);
+    return isLyricsData(unpacked) ? unpacked : null;
 }
 
 function extractTrackIdFromBody(bodyText: string | null | undefined): string | null {
@@ -120,18 +276,10 @@ function processCapturedResponse(trackId: string, payload: QueryResponse): void 
         const result = q?.result;
         if (!result || result.httpStatus !== 200) continue;
 
-        let lyricsData: LyricsData | null = null;
-        if (result.format === 'json' && isLyricsData(result.data)) {
-            lyricsData = result.data as LyricsData;
-        } else if (result.format === 'text' && typeof result.data === 'string') {
-            try {
-                const parsed = JSON.parse(result.data);
-                if (isLyricsData(parsed)) lyricsData = parsed;
-            } catch {}
-        }
+        const lyricsData = normalizeCapturedLyricsData(result.data);
 
         if (lyricsData) {
-            captureCache.set(trackId, lyricsData);
+            setCaptureCache(trackId, lyricsData);
             return;
         }
     }
@@ -158,10 +306,6 @@ async function readSpicyLyricsCache(trackId: string): Promise<LyricsData | null>
             return null;
         }
 
-        if (typeof item.CacheVersion === 'number' && item.CacheVersion !== SPICY_LYRICS_CACHE_VERSION) {
-            return null;
-        }
-
         if (typeof item.ExpiresAt === 'number' && item.ExpiresAt < Date.now()) {
             return null;
         }
@@ -171,7 +315,7 @@ async function readSpicyLyricsCache(trackId: string): Promise<LyricsData | null>
             return null;
         }
 
-        return isLyricsData(content) ? content : null;
+        return normalizeCapturedLyricsData(content);
     } catch (err) {
         warn('Failed to read Spicy Lyrics cache:', err);
         return null;
@@ -184,7 +328,7 @@ async function getStoredLyricsData(trackId: string): Promise<LyricsData | null> 
 
     const cached = await readSpicyLyricsCache(trackId);
     if (cached) {
-        captureCache.set(trackId, cached);
+        setCaptureCache(trackId, cached);
         return cached;
     }
 
@@ -306,13 +450,13 @@ function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
                     text: syllable.Text,
                     startTime: syllable.StartTime,
                     endTime: syllable.EndTime,
-                    isPartOfWord: syllable.IsPartOfWord,
+                    isPartOfWord: syllable.IsPartOfWord === true,
                 });
-                const romanSyl = syllable.RomanizedText ?? syllable.Text;
-                if (syllable.RomanizedText && syllable.RomanizedText !== syllable.Text) {
+                const romanSyl = getRomanizedText(syllable) ?? syllable.Text;
+                if (romanSyl && romanSyl !== syllable.Text) {
                     anyRomanized = true;
                 }
-                if (syllable.IsPartOfWord) {
+                if (syllable.IsPartOfWord === true) {
                     lineText += syllable.Text;
                     romanizedText += romanSyl;
                 } else {
@@ -339,7 +483,7 @@ function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
                 startTime: group.StartTime,
                 endTime: group.EndTime,
                 isInstrumental: false,
-                romanizedText: group.RomanizedText?.trim() || undefined,
+                romanizedText: getRomanizedText(group),
             });
             continue;
         }
@@ -352,7 +496,7 @@ function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
                     startTime: group.Lead.StartTime,
                     endTime: group.Lead.EndTime,
                     isInstrumental: false,
-                    romanizedText: group.Lead.RomanizedText?.trim() || undefined,
+                    romanizedText: getRomanizedText(group.Lead),
                 });
                 continue;
             }
@@ -371,7 +515,7 @@ function extractStaticLinesData(lyrics: LyricsData): LyricLineData[] {
         startTime: 0,
         endTime: 0,
         isInstrumental: false,
-        romanizedText: line.RomanizedText?.trim() || undefined,
+        romanizedText: getRomanizedText(line),
     }));
 }
 
