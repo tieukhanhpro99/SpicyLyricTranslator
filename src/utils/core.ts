@@ -11,7 +11,12 @@ import {
     setLineTimingData,
     setRomanizationData,
     setOriginalTextData,
-    setQualityMetadata
+    setQualityMetadata,
+    setTranslationContentData,
+    setRomanizationContentData,
+    setOriginalContentData,
+    setQualityContentData,
+    setTimingContentData
 } from './translationOverlay';
 import { shouldSkipTranslation, detectLanguageHeuristic, detectRomanizedJapanese, isSameLanguage } from './languageDetection';
 import { openSettingsModal } from './settings';
@@ -31,8 +36,86 @@ let keyboardShortcutListener: ((e: KeyboardEvent) => void) | null = null;
 const SPICY_LYRICS_CACHE_NAME = 'SpicyLyrics_LyricsStore';
 const romanizationRepairAttempts = new Set<string>();
 
+let contentTranslation = new Map<string, string>();
+let contentQuality = new Map<string, TranslationQualityMeta>();
+let coveredKeys = new Set<string>();
+let fillGapsInFlight = false;
+
+interface SkippedTranslationState {
+    trackUri: string | null;
+    targetLanguage: string;
+    romanizationOn: boolean;
+    lyricsKey: string;
+    domLyricsKey?: string;
+    detectedLanguage?: string;
+}
+
+let lastSkippedTranslation: SkippedTranslationState | null = null;
+
 function normalizeMatchKey(text: string | undefined | null): string {
     return (text || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '').trim();
+}
+
+function buildLyricsKey(lines: string[]): string {
+    let hash = 2166136261;
+    let count = 0;
+
+    for (const rawLine of lines) {
+        const line = (rawLine || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (!line) continue;
+        count++;
+        const value = `${line}\u241E`;
+
+        for (let i = 0; i < value.length; i++) {
+            hash ^= value.charCodeAt(i);
+            hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+        }
+    }
+
+    return `${count}:${(hash >>> 0).toString(36)}`;
+}
+
+function matchesSkippedTranslation(
+    trackUri: string | null,
+    targetLanguage: string,
+    romanizationOn: boolean,
+    lyricsKey: string
+): boolean {
+    if (!lastSkippedTranslation) return false;
+    if (lastSkippedTranslation.trackUri !== trackUri) return false;
+    if (lastSkippedTranslation.targetLanguage !== targetLanguage) return false;
+    if (lastSkippedTranslation.romanizationOn !== romanizationOn) return false;
+    return lastSkippedTranslation.lyricsKey === lyricsKey || lastSkippedTranslation.domLyricsKey === lyricsKey;
+}
+
+let lastSkipNotifyKey: string | null = null;
+
+function shouldNotifySkip(trackUri: string | null, targetLanguage: string, romanizationOn: boolean): boolean {
+    const key = `${trackUri ?? ''}${targetLanguage}${romanizationOn ? '1' : '0'}`;
+    if (lastSkipNotifyKey === key) return false;
+    lastSkipNotifyKey = key;
+    return true;
+}
+
+function rememberSkippedTranslation(
+    trackUri: string | null,
+    targetLanguage: string,
+    romanizationOn: boolean,
+    lyricsKey: string,
+    domLyricsKey?: string,
+    detectedLanguage?: string
+): void {
+    lastSkippedTranslation = {
+        trackUri,
+        targetLanguage,
+        romanizationOn,
+        lyricsKey,
+        domLyricsKey,
+        detectedLanguage
+    };
+    state.lastTranslatedSongUri = trackUri;
+    lastTranslatedRomanizationState = romanizationOn;
+    if (detectedLanguage) state.detectedLanguage = detectedLanguage;
 }
 
 function lookupWithFallback<V>(map: Map<string, V>, text: string | undefined | null): V | undefined {
@@ -86,10 +169,28 @@ function getPIPWindow(): Window | null {
 }
 
 export function isRomanizationActive(): boolean {
+    const readUiState = (raw: string | null | undefined): boolean | null => {
+        if (!raw) return null;
+        try {
+            const obj = JSON.parse(raw);
+            if (obj && typeof obj.romanization === 'boolean') return obj.romanization;
+        } catch (e) {}
+        return null;
+    };
+
+    try {
+        const spicetifyStorage = (globalThis as any).Spicetify?.LocalStorage;
+        const fromSpicetify = readUiState(spicetifyStorage?.get?.('SL:uiState'));
+        if (fromSpicetify !== null) return fromSpicetify;
+    } catch (e) {}
+
+    try {
+        const fromLocal = readUiState(localStorage.getItem('SL:uiState'));
+        if (fromLocal !== null) return fromLocal;
+    } catch (e) {}
+
     const btn = document.querySelector('#RomanizationToggle');
-    if (btn) {
-        if (btn.classList.contains('active')) return true;
-    }
+    if (btn && btn.classList.contains('active')) return true;
 
     const keys = [
         'SpicyLyrics-romanization',
@@ -425,10 +526,12 @@ function parseNonNegativeIndex(value: string | null | undefined): number | null 
 
 function getLyricElementIndex(line: Element, fallbackIndex: number): number {
     const ownDataset = (line as HTMLElement).dataset;
-    const ownIndex = parseNonNegativeIndex(ownDataset.sltIndex || ownDataset.lineIndex);
+    const ownIndex = parseNonNegativeIndex(ownDataset?.sltIndex || ownDataset?.lineIndex);
     if (ownIndex !== null) return ownIndex;
 
-    const wrapper = line.closest('[data-index]') as HTMLElement | null;
+    const wrapper = typeof line.closest === 'function'
+        ? line.closest('[data-index]') as HTMLElement | null
+        : null;
     const wrapperIndex = parseNonNegativeIndex(wrapper?.dataset.index);
     return wrapperIndex ?? fallbackIndex;
 }
@@ -501,19 +604,6 @@ export function resolveTranslationSourceLines(input: TranslationSourceSelectionI
             };
         }
 
-        const domCount = domLineTexts.length;
-        if (!virtualizedDom && domCount > 0 && apiVocalTexts.length > domCount) {
-            apiVocalTexts = apiVocalTexts.slice(0, domCount);
-            if (apiVocalLineData) apiVocalLineData = apiVocalLineData.slice(0, domCount);
-        } else if (!virtualizedDom && domCount > 0 && apiVocalTexts.length < domCount) {
-            for (let i = apiVocalTexts.length; i < domCount; i++) {
-                apiVocalTexts.push('');
-                if (apiVocalLineData) {
-                    apiVocalLineData.push(emptyLineData());
-                }
-            }
-        }
-
         const hasOriginalText = apiVocalTexts.some(text => text.trim().length > 0);
         return {
             canTranslate: hasOriginalText,
@@ -525,7 +615,7 @@ export function resolveTranslationSourceLines(input: TranslationSourceSelectionI
         };
     }
 
-    const useApiLines = Boolean(apiVocalTexts && (apiVocalTexts.length === domLineTexts.length || virtualizedDom));
+    const useApiLines = Boolean(apiVocalTexts && apiVocalTexts.length > 0);
     const lineTexts = useApiLines ? apiVocalTexts! : domLineTexts;
     return {
         canTranslate: lineTexts.some(text => text.trim().length > 0),
@@ -636,9 +726,10 @@ export async function translateCurrentLyrics(): Promise<void> {
         }
         if (hasRealTranslation) {
             const lines = getLyricsLines();
-            if (lines.length > 0 && !document.querySelector('.slt-interleaved-translation, .slt-replace-line, .spicy-translated')) {
+            if (lines.length > 0) {
                 applyTranslations(lines);
             }
+            void fillVisibleGaps();
             return;
         }
         state.lastTranslatedSongUri = null;
@@ -677,6 +768,13 @@ export async function translateCurrentLyrics(): Promise<void> {
 
         const currentTrackUri = getCurrentTrackUri();
         const romanizationOn = isRomanizationActive();
+        const domLyricsKey = buildLyricsKey(nonEmptyDomTexts);
+        if (matchesSkippedTranslation(currentTrackUri, state.targetLanguage, romanizationOn, domLyricsKey)) {
+            removeTranslations();
+            state.lastTranslatedSongUri = currentTrackUri;
+            lastTranslatedRomanizationState = romanizationOn;
+            return;
+        }
         let preApiSkipCheck: { skip: boolean; reason?: string; detectedLanguage?: string } | null = null;
 
         if (!romanizationOn) {
@@ -687,9 +785,15 @@ export async function translateCurrentLyrics(): Promise<void> {
 
             if (preApiSkipCheck.skip && getConfidentNonTargetLineIndexes(domLineTexts, state.targetLanguage).length === 0) {
                 removeTranslations();
-                state.lastTranslatedSongUri = currentTrackUri;
-                lastTranslatedRomanizationState = romanizationOn;
-                if (state.showNotifications && Spicetify.showNotification) {
+                rememberSkippedTranslation(
+                    currentTrackUri,
+                    state.targetLanguage,
+                    romanizationOn,
+                    domLyricsKey,
+                    domLyricsKey,
+                    preApiSkipCheck.detectedLanguage
+                );
+                if (state.showNotifications && Spicetify.showNotification && shouldNotifySkip(currentTrackUri, state.targetLanguage, romanizationOn)) {
                     Spicetify.showNotification(preApiSkipCheck.reason || 'Lyrics already in target language');
                 }
                 return;
@@ -736,8 +840,7 @@ export async function translateCurrentLyrics(): Promise<void> {
             }
         }
         
-        let useApiLines = Boolean(apiVocalTexts && (apiVocalTexts.length === lines.length || virtualizedDom));
-        
+        let useApiLines = Boolean(apiVocalTexts && apiVocalTexts.length > 0);
         if (!useApiLines && romanizationOn && apiVocalTexts && apiVocalTexts.length > 0) {
             for (let retryAttempt = 0; retryAttempt < 2; retryAttempt++) {
                 await new Promise(resolve => setTimeout(resolve, 400));
@@ -851,6 +954,7 @@ export async function translateCurrentLyrics(): Promise<void> {
         if (nonEmptyTexts.length === 0) {
             return;
         }
+        const sourceLyricsKey = buildLyricsKey(nonEmptyTexts);
         
         const detectedLang = apiLanguage || cachedSourceLanguage || state.detectedLanguage || undefined;
 
@@ -878,15 +982,28 @@ export async function translateCurrentLyrics(): Promise<void> {
         let translations;
 
         if (skipCheck.skip) {
+            if (matchesSkippedTranslation(currentTrackUri, state.targetLanguage, romanizationOn, sourceLyricsKey)) {
+                removeTranslations();
+                state.lastTranslatedSongUri = currentTrackUri;
+                lastTranslatedRomanizationState = romanizationOn;
+                return;
+            }
+
             const nonTargetIndexes = getConfidentNonTargetLineIndexes(lineTexts, state.targetLanguage);
 
             if (nonTargetIndexes.length === 0) {
                 removeTranslations();
                 state.isTranslating = false;
-                state.lastTranslatedSongUri = currentTrackUri;
-                lastTranslatedRomanizationState = romanizationOn;
+                rememberSkippedTranslation(
+                    currentTrackUri,
+                    state.targetLanguage,
+                    romanizationOn,
+                    sourceLyricsKey,
+                    domLyricsKey,
+                    skipCheck.detectedLanguage
+                );
                 restoreButtonState();
-                if (state.showNotifications && Spicetify.showNotification) {
+                if (state.showNotifications && Spicetify.showNotification && shouldNotifySkip(currentTrackUri, state.targetLanguage, romanizationOn)) {
                     Spicetify.showNotification(skipCheck.reason || 'Lyrics already in target language');
                 }
                 return;
@@ -930,6 +1047,30 @@ export async function translateCurrentLyrics(): Promise<void> {
         if (currentTrackUri && getCurrentTrackUri() !== currentTrackUri) {
             return;
         }
+
+        const hasMeaningfulTranslation = translations.some(result =>
+            result.wasTranslated &&
+            normalizeForComparison(result.originalText) !== normalizeForComparison(result.translatedText)
+        );
+        const sameLanguagePassthrough = !hasMeaningfulTranslation && translations.some(result =>
+            result.detectedLanguage && isSameLanguage(result.detectedLanguage, state.targetLanguage)
+        );
+
+        if (sameLanguagePassthrough) {
+            removeTranslations();
+            rememberSkippedTranslation(
+                currentTrackUri,
+                state.targetLanguage,
+                romanizationOn,
+                sourceLyricsKey,
+                domLyricsKey,
+                translations.find(result => result.detectedLanguage)?.detectedLanguage
+            );
+            return;
+        }
+
+        lastSkippedTranslation = null;
+        lastSkipNotifyKey = null;
         
         state.translatedLyrics.clear();
 
@@ -1020,6 +1161,30 @@ export async function translateCurrentLyrics(): Promise<void> {
             }
         }
 
+        const timingByContent = new Map<string, LyricLineData>();
+        const addTimingByContent = (data: LyricLineData[] | null): void => {
+            if (!data) return;
+            for (const ld of data) {
+                if (!ld) continue;
+                for (const key of [ld.text, ld.romanizedText]) {
+                    const norm = normalizeMatchKey(key);
+                    if (norm && !timingByContent.has(norm)) timingByContent.set(norm, ld);
+                }
+            }
+        };
+        addTimingByContent(apiVocalLineData);
+        addTimingByContent(apiLineData);
+
+        setTranslationContentData(translationByContent);
+        setRomanizationContentData(romanizationByContent);
+        setOriginalContentData(originalByContent);
+        setQualityContentData(qualityByContent);
+        setTimingContentData(timingByContent);
+
+        contentTranslation = translationByContent;
+        contentQuality = qualityByContent;
+        coveredKeys = new Set(translationByContent.keys());
+
         const buildIndexMapsForLines = (targetLines: NodeListOf<Element> | Element[]): void => {
             const translationsByIdx = new Map<number, string>();
             const qualityByIdx = new Map<number, TranslationQualityMeta>();
@@ -1092,7 +1257,9 @@ export async function translateCurrentLyrics(): Promise<void> {
         } else {
             applyTranslations(lines);
         }
-        
+
+        void fillVisibleGaps();
+
         if (state.showNotifications && Spicetify.showNotification) {
             const notif = buildTranslationNotification(translations, currentTrackUri, state.targetLanguage);
             if (notif) Spicetify.showNotification(notif);
@@ -1216,6 +1383,66 @@ function applyTranslations(lines: NodeListOf<Element>): void {
     updateOverlayContent(translationMapByIndex);
 }
 
+async function fillVisibleGaps(): Promise<void> {
+    if (!state.isEnabled || state.isTranslating || fillGapsInFlight) return;
+    if (isRomanizationActive()) return;
+    if (coveredKeys.size === 0 && contentTranslation.size === 0) return;
+
+    const lines = getLyricsLines();
+    if (lines.length === 0) return;
+
+    const missing: string[] = [];
+    const missingKeys = new Set<string>();
+    lines.forEach(line => {
+        const text = extractLineText(line);
+        if (!text || !text.trim()) return;
+        if (/^[♪♫•\-–—\s]+$/.test(text.trim())) return;
+        const key = normalizeMatchKey(text);
+        if (!key || coveredKeys.has(key) || missingKeys.has(key)) return;
+        missingKeys.add(key);
+        missing.push(text);
+    });
+
+    if (missing.length === 0) return;
+
+    fillGapsInFlight = true;
+    try {
+        const currentTrackUri = getCurrentTrackUri();
+        const results = await translateLyrics(missing, state.targetLanguage, currentTrackUri || undefined, state.detectedLanguage || undefined, true);
+        if (currentTrackUri && getCurrentTrackUri() !== currentTrackUri) return;
+
+        let added = false;
+        results.forEach((result, i) => {
+            const source = missing[i];
+            const key = normalizeMatchKey(source);
+            if (!key) return;
+            coveredKeys.add(key);
+            const translated = result.translatedText;
+            if (source.trim()) state.translatedLyrics.set(source, translated);
+            contentTranslation.set(key, translated);
+            if (result.wasTranslated) {
+                contentQuality.set(key, {
+                    source: result.source || 'api',
+                    api: result.apiProvider || state.preferredApi,
+                    detectedLanguage: state.detectedLanguage || result.detectedLanguage || undefined
+                });
+            }
+            added = true;
+        });
+
+        if (added) {
+            setTranslationContentData(contentTranslation);
+            setQualityContentData(contentQuality);
+            const fresh = getLyricsLines();
+            if (fresh.length > 0) applyTranslations(fresh);
+        }
+    } catch (err) {
+        warn('Failed to fill visible translation gaps:', err);
+    } finally {
+        fillGapsInFlight = false;
+    }
+}
+
 export function reapplyTranslations(): void {
     if (state.translatedLyrics.size === 0) return;
     
@@ -1239,7 +1466,11 @@ export function reapplyTranslations(): void {
 
 export function removeTranslations(): void {
     if (isOverlayActive()) disableOverlay();
-    
+
+    contentTranslation = new Map();
+    contentQuality = new Map();
+    coveredKeys = new Set();
+
     const docs = [document];
     const pip = getPIPWindow();
     if (pip) docs.push(pip.document);

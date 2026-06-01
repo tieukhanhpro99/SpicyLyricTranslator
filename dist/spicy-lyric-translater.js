@@ -515,10 +515,18 @@ var SpicyLyricTranslater = (() => {
       return;
     const index = getCacheIndex();
     if (targetLang) {
-      const cacheKey = getCacheKey(trackUri, targetLang);
-      storage2.removeItem(cacheKey);
-      const fullKey = `${trackUri}:${targetLang}`;
-      index.trackUris = index.trackUris.filter((k) => k !== fullKey);
+      const normWanted = normalizeTrackUri(trackUri);
+      storage2.removeItem(getCacheKey(trackUri, targetLang));
+      collectNativeCacheKeys(storage2).forEach((key) => {
+        const parsed = parseCacheKey(key);
+        if (parsed && parsed.targetLang === targetLang && normalizeTrackUri(parsed.trackUri) === normWanted) {
+          storage2.removeItem(key);
+        }
+      });
+      index.trackUris = index.trackUris.filter((fullKey) => {
+        const p = parseFullKey(fullKey);
+        return !(p && p.targetLang === targetLang && normalizeTrackUri(p.trackUri) === normWanted);
+      });
     } else {
       const keysToRemove = index.trackUris.filter((k) => k.startsWith(trackUri + ":"));
       keysToRemove.forEach((k) => {
@@ -628,6 +636,17 @@ var SpicyLyricTranslater = (() => {
       sizeBytes
     };
   }
+  function dedupeCachedTracks(tracks) {
+    const byKey = /* @__PURE__ */ new Map();
+    for (const t of tracks) {
+      const key = `${normalizeTrackUri(t.trackUri)}:${t.targetLang}`;
+      const existing = byKey.get(key);
+      if (!existing || t.timestamp > existing.timestamp) {
+        byKey.set(key, t);
+      }
+    }
+    return Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
+  }
   function getAllCachedTracks() {
     runCacheSchemaMigration();
     const storage2 = getStorage();
@@ -665,7 +684,7 @@ var SpicyLyricTranslater = (() => {
           }
         }
         if (tracks.length > 0) {
-          return tracks.sort((a, b) => b.timestamp - a.timestamp);
+          return dedupeCachedTracks(tracks);
         }
       } catch (e) {
         warn("Failed to iterate native localStorage:", e);
@@ -698,7 +717,7 @@ var SpicyLyricTranslater = (() => {
       } catch (e) {
       }
     });
-    return tracks.sort((a, b) => b.timestamp - a.timestamp);
+    return dedupeCachedTracks(tracks);
   }
   function getCurrentTrackUri() {
     try {
@@ -2849,11 +2868,11 @@ ${text}`;
       totalTokens: session.totalTokens > 0 ? session.totalTokens : void 0
     };
   }
-  async function translateLyrics(lines, targetLang, trackUri, detectedSourceLang) {
+  async function translateLyrics(lines, targetLang, trackUri, detectedSourceLang, skipTrackCache = false) {
     const metricsSession = beginMetricsSession();
     const metricsStartedAt = Date.now();
     try {
-      return await translateLyricsInner(lines, targetLang, trackUri, detectedSourceLang, metricsSession, metricsStartedAt);
+      return await translateLyricsInner(lines, targetLang, trackUri, detectedSourceLang, metricsSession, metricsStartedAt, skipTrackCache);
     } finally {
       endMetricsSession(metricsSession);
     }
@@ -2877,7 +2896,7 @@ ${text}`;
       source: "cache"
     }));
   }
-  async function translateLyricsInner(lines, targetLang, trackUri, detectedSourceLang, metricsSession, metricsStartedAt) {
+  async function translateLyricsInner(lines, targetLang, trackUri, detectedSourceLang, metricsSession, metricsStartedAt, skipTrackCache = false) {
     const currentTrackUri = trackUri || getCurrentTrackUri();
     const sourceFingerprint = computeSourceLyricsFingerprint(lines);
     const lineLanguages = getConfidentLineLanguages(lines);
@@ -2902,12 +2921,12 @@ ${text}`;
       }
     }
     if (sameLangFromHint || sameLangFromLines || sameLangFromCorpus) {
-      if (currentTrackUri) {
+      if (currentTrackUri && !skipTrackCache) {
         deleteTrackCache(currentTrackUri, targetLang);
       }
       return buildSameLanguagePassthrough(lines, targetLang, detectedSourceLang || targetLang);
     }
-    if (currentTrackUri) {
+    if (currentTrackUri && !skipTrackCache) {
       const trackCache = getTrackCache(currentTrackUri, targetLang);
       if (trackCache && trackCache.lines.length === lines.length) {
         if (shouldInvalidateSameLanguageTrackCache(trackCache.lang, targetLang, lines, trackCache.lines)) {
@@ -2963,7 +2982,7 @@ ${text}`;
     if (uncachedLines.length === 0) {
       const finalResults = lines.map((_, index) => cachedResults.get(index));
       const someTranslated2 = finalResults.some((r) => r.wasTranslated);
-      if (currentTrackUri && someTranslated2) {
+      if (currentTrackUri && someTranslated2 && !skipTrackCache) {
         const translatedLines = finalResults.map((r) => r.translatedText);
         setTrackCache(
           currentTrackUri,
@@ -3138,13 +3157,13 @@ ${text}`;
           wasTranslated: false
         };
       }
-      if (currentTrackUri) {
+      if (currentTrackUri && !skipTrackCache) {
         deleteTrackCache(currentTrackUri, targetLang);
       }
       return results;
     }
     const someTranslated = results.some((r) => r.wasTranslated);
-    if (currentTrackUri && results.length > 0 && someTranslated) {
+    if (currentTrackUri && results.length > 0 && someTranslated && !skipTrackCache) {
       const translatedLines = results.map((r) => r.translatedText);
       setTrackCache(
         currentTrackUri,
@@ -3735,18 +3754,130 @@ ${text}`;
   var originalTextMap = /* @__PURE__ */ new Map();
   var lineTimingData = [];
   var qualityMap = /* @__PURE__ */ new Map();
+  var translationByContent = /* @__PURE__ */ new Map();
+  var romanizationByContent = /* @__PURE__ */ new Map();
+  var originalByContent = /* @__PURE__ */ new Map();
+  var qualityByContent = /* @__PURE__ */ new Map();
+  var timingByContent = /* @__PURE__ */ new Map();
   function normalizeCompare(text) {
     return (text || "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "").trim();
   }
-  var docCacheMap = /* @__PURE__ */ new WeakMap();
-  function getDocCache(doc) {
-    let cache = docCacheMap.get(doc);
-    if (!cache) {
-      cache = { lines: null, translationMap: null, romanizationElMap: null, originalElMap: null, lastActiveIndex: -1 };
-      docCacheMap.set(doc, cache);
+  function lookupByContent(map, text) {
+    if (!text || map.size === 0)
+      return void 0;
+    const norm = normalizeCompare(text);
+    if (norm) {
+      const direct = map.get(norm);
+      if (direct !== void 0)
+        return direct;
     }
-    return cache;
+    const nonLatinOnly = text.replace(/[A-Za-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+    if (nonLatinOnly && nonLatinOnly !== text) {
+      const nNorm = normalizeCompare(nonLatinOnly);
+      if (nNorm) {
+        const match = map.get(nNorm);
+        if (match !== void 0)
+          return match;
+      }
+    }
+    const latinOnly = text.replace(/[^A-Za-z0-9\s'\-]/g, " ").replace(/\s+/g, " ").trim();
+    if (latinOnly && latinOnly !== text) {
+      const lNorm = normalizeCompare(latinOnly);
+      if (lNorm) {
+        const match = map.get(lNorm);
+        if (match !== void 0)
+          return match;
+      }
+    }
+    if (norm && norm.length >= 4) {
+      let best = null;
+      for (const [key, value] of map) {
+        if (key.length < 4)
+          continue;
+        if (norm.includes(key) || key.includes(norm)) {
+          if (!best || key.length > best.key.length) {
+            best = { key, value };
+          }
+        }
+      }
+      if (best)
+        return best.value;
+    }
+    return void 0;
   }
+  function hasContentData() {
+    return translationByContent.size > 0 || romanizationByContent.size > 0 || originalByContent.size > 0;
+  }
+  function rebuildPerLineMaps(lines) {
+    if (!hasContentData())
+      return;
+    translationMap = /* @__PURE__ */ new Map();
+    romanizationMap = /* @__PURE__ */ new Map();
+    originalTextMap = /* @__PURE__ */ new Map();
+    qualityMap = /* @__PURE__ */ new Map();
+    lineTimingData = [];
+    for (let index = 0; index < lines.length; index++) {
+      const lineIndex = getLineElementIndex(lines[index], index);
+      const text = extractLineText(lines[index]);
+      if (!text)
+        continue;
+      const t = lookupByContent(translationByContent, text);
+      if (t)
+        translationMap.set(lineIndex, t);
+      const r = lookupByContent(romanizationByContent, text);
+      if (r)
+        romanizationMap.set(lineIndex, r);
+      const o = lookupByContent(originalByContent, text);
+      if (o)
+        originalTextMap.set(lineIndex, o);
+      const q = lookupByContent(qualityByContent, text);
+      if (q)
+        qualityMap.set(lineIndex, q);
+      const tim = lookupByContent(timingByContent, text);
+      if (tim)
+        lineTimingData[lineIndex] = tim;
+    }
+  }
+  function setTranslationContentData(data) {
+    translationByContent = new Map(data);
+  }
+  function setRomanizationContentData(data) {
+    romanizationByContent = new Map(data);
+  }
+  function setOriginalContentData(data) {
+    originalByContent = new Map(data);
+  }
+  function setQualityContentData(data) {
+    qualityByContent = new Map(data);
+  }
+  function setTimingContentData(data) {
+    timingByContent = new Map(data);
+  }
+  var lastRenderSigMap = /* @__PURE__ */ new WeakMap();
+  function computeRenderSignature(lines) {
+    const parts = [
+      currentConfig.mode,
+      currentConfig.syncWordHighlight ? "1" : "0",
+      storage.get("vocabulary-mode") === "true" ? "1" : "0"
+    ];
+    for (let i = 0; i < lines.length; i++) {
+      const lineIndex = getLineElementIndex(lines[i], i);
+      const text = extractLineText(lines[i]);
+      const tr = translationMap.get(lineIndex) || "";
+      const rom = romanizationMap.get(lineIndex) || "";
+      const orig = originalTextMap.get(lineIndex) || "";
+      parts.push(`${text}${tr}${rom}${orig}`);
+    }
+    return parts.join("");
+  }
+  function renderSignatureUnchanged(doc, lines) {
+    const sig = computeRenderSignature(lines);
+    if (lastRenderSigMap.get(doc) === sig)
+      return true;
+    lastRenderSigMap.set(doc, sig);
+    return false;
+  }
+  var docCacheMap = /* @__PURE__ */ new WeakMap();
   function resetDocCache(doc) {
     docCacheMap.set(doc, { lines: null, translationMap: null, romanizationElMap: null, originalElMap: null, lastActiveIndex: -1 });
   }
@@ -3837,10 +3968,10 @@ ${text}`;
   }
   function getLineElementIndex(line, fallbackIndex) {
     const ownDataset = line.dataset;
-    const ownIndex = parseNonNegativeIndex(ownDataset.sltIndex || ownDataset.lineIndex);
+    const ownIndex = parseNonNegativeIndex(ownDataset?.sltIndex || ownDataset?.lineIndex);
     if (ownIndex !== null)
       return ownIndex;
-    const wrapper = line.closest("[data-index]");
+    const wrapper = typeof line.closest === "function" ? line.closest("[data-index]") : null;
     const wrapperIndex = parseNonNegativeIndex(wrapper?.dataset.index);
     return wrapperIndex ?? fallbackIndex;
   }
@@ -3952,58 +4083,126 @@ ${text}`;
     }
     return line.classList.contains("Active") || line.classList.contains("playing") || line.getAttribute("data-active") === "true" || line.dataset.active === "true";
   }
+  function findOriginalLineForTranslation(transEl) {
+    let prev = transEl.previousElementSibling;
+    while (prev && !prev.classList.contains("line")) {
+      prev = prev.previousElementSibling;
+    }
+    return prev;
+  }
+  function adjacentOriginalLine(el) {
+    if (el.classList.contains("slt-original-line")) {
+      let next = el.nextElementSibling;
+      while (next && !next.classList.contains("line")) {
+        next = next.nextElementSibling;
+      }
+      return next;
+    }
+    return findOriginalLineForTranslation(el);
+  }
   function applyReplaceMode(doc) {
-    resetDocCache(doc);
     const lines = getLyricLines(doc);
-    doc.querySelectorAll(".slt-replace-line").forEach((el) => el.remove());
-    doc.querySelectorAll(".slt-romanization-line").forEach((el) => el.remove());
-    doc.querySelectorAll(".slt-original-line").forEach((el) => el.remove());
-    doc.querySelectorAll(".slt-replace-hidden").forEach((el) => el.classList.remove("slt-replace-hidden"));
-    doc.querySelectorAll(".slt-learning-hidden").forEach((el) => el.classList.remove("slt-learning-hidden"));
+    rebuildPerLineMaps(lines);
+    if (renderSignatureUnchanged(doc, lines))
+      return;
+    resetDocCache(doc);
     const lyricsContainer = doc.querySelector(".SpicyLyricsScrollContainer");
     const lyricsType = lyricsContainer?.getAttribute("data-lyrics-type") || "Line";
     const learningMode = isLearningModeActive();
+    const vocabEnabled = storage.get("vocabulary-mode") === "true";
+    const claimed = /* @__PURE__ */ new Set();
     lines.forEach((line, index) => {
       const lineIndex = getLineElementIndex(line, index);
+      const lineEl = line;
       const translation = translationMap.get(lineIndex);
-      if (!translation)
-        return;
       const originalText = extractLineText(line);
-      if (translation === originalText)
+      let existing = line.nextElementSibling;
+      if (existing && !existing.classList.contains("slt-replace-line"))
+        existing = null;
+      let existingOrig = line.previousElementSibling;
+      if (existingOrig && !existingOrig.classList.contains("slt-original-line"))
+        existingOrig = null;
+      const wants = !!translation && translation !== originalText && !!line.parentNode;
+      if (!wants) {
+        if (existing)
+          existing.remove();
+        if (existingOrig)
+          existingOrig.remove();
+        lineEl.classList.remove("slt-replace-hidden");
+        lineEl.classList.remove("slt-learning-hidden");
         return;
-      if (!line.parentNode)
-        return;
-      const timingInfoEarly = lineTimingData[lineIndex];
-      const isBreakEarly = !originalText.trim() || /^[♪♫•\-–—\s]+$/.test(originalText.trim());
+      }
+      const timingInfo = lineTimingData[lineIndex];
+      const isBreak = !originalText.trim() || /^[\s\-\u2022\u2013\u2014\u266A\u266B]+$/.test(originalText.trim());
       const hasRomanization = !!romanizationMap.get(lineIndex);
       const hasApiOriginal = !!originalTextMap.get(lineIndex);
       const domIsRomanized = domLineIsRomanized(line, lineIndex);
-      const learningActive = learningMode && hasRomanization && !(timingInfoEarly?.isInstrumental || isBreakEarly);
+      const learningActive = learningMode && hasRomanization && !(timingInfo?.isInstrumental || isBreak);
       const showInjectedOriginal = learningActive && domIsRomanized && hasApiOriginal;
       const keepDomVisible = learningActive && !domIsRomanized;
-      if (!keepDomVisible) {
-        line.classList.add("slt-replace-hidden");
+      const isInstrumental = timingInfo?.isInstrumental || isBreak;
+      let pairBelowText = originalText;
+      if (domIsRomanized) {
+        pairBelowText = originalTextMap.get(lineIndex) || originalText;
+      } else {
+        pairBelowText = romanizationMap.get(lineIndex) || originalTextMap.get(lineIndex) || originalText;
       }
-      line.dataset.sltIndex = lineIndex.toString();
+      const sig = [
+        translation,
+        isInstrumental ? "I" : "",
+        domIsRomanized ? "R" : "",
+        showInjectedOriginal ? "O" : "",
+        keepDomVisible ? "K" : "",
+        vocabEnabled ? "V" : "",
+        currentConfig.syncWordHighlight ? "W" : "",
+        pairBelowText
+      ].join("");
+      lineEl.classList.toggle("slt-replace-hidden", !keepDomVisible);
+      lineEl.dataset.sltIndex = lineIndex.toString();
+      const refreshOriginal = () => {
+        if (showInjectedOriginal) {
+          if (existingOrig) {
+            existingOrig.dataset.lineIndex = lineIndex.toString();
+            existingOrig.dataset.forLine = lineIndex.toString();
+            claimed.add(existingOrig);
+          } else {
+            const origEl = buildOriginalLine(doc, lineIndex, timingInfo, line);
+            if (origEl) {
+              line.parentNode.insertBefore(origEl, line);
+              claimed.add(origEl);
+            }
+          }
+        } else if (existingOrig) {
+          existingOrig.remove();
+        }
+      };
+      if (existing && existing.dataset.sltSig === sig) {
+        existing.dataset.lineIndex = lineIndex.toString();
+        existing.dataset.forLine = lineIndex.toString();
+        if (timingInfo) {
+          existing.dataset.startTime = timingInfo.startTime.toString();
+          existing.dataset.endTime = timingInfo.endTime.toString();
+        }
+        claimed.add(existing);
+        refreshOriginal();
+        return;
+      }
+      if (existing)
+        existing.remove();
+      if (existingOrig) {
+        existingOrig.remove();
+        existingOrig = null;
+      }
       const replaceEl = doc.createElement("div");
       replaceEl.className = "slt-replace-line slt-sync-translation";
       replaceEl.dataset.lineIndex = lineIndex.toString();
       replaceEl.dataset.forLine = lineIndex.toString();
       replaceEl.dataset.lyricsType = lyricsType;
-      const isBreak = !originalText.trim() || /^[♪♫•\-–—\s]+$/.test(originalText.trim());
-      const timingInfo = lineTimingData[lineIndex];
-      const isInstrumental = timingInfo?.isInstrumental || isBreak;
+      replaceEl.dataset.sltSig = sig;
       if (isInstrumental) {
         replaceEl.textContent = "\u266A \u266A \u266A";
         replaceEl.classList.add("slt-replace-instrumental");
       } else {
-        const vocabEnabled = storage.get("vocabulary-mode") === "true";
-        let pairBelowText = originalText;
-        if (domIsRomanized) {
-          pairBelowText = originalTextMap.get(lineIndex) || originalText;
-        } else {
-          pairBelowText = romanizationMap.get(lineIndex) || originalTextMap.get(lineIndex) || originalText;
-        }
         if (vocabEnabled) {
           replaceEl.classList.add("slt-vocab-line");
           appendVocabularyPairs(doc, replaceEl, pairBelowText, translation, line, "slt-replace-word");
@@ -4043,12 +4242,12 @@ ${text}`;
         replaceEl.appendChild(qualityIndicator);
       }
       line.parentNode.insertBefore(replaceEl, line.nextSibling);
-      if (showInjectedOriginal) {
-        const origEl = buildOriginalLine(doc, lineIndex, timingInfo, line);
-        if (origEl) {
-          line.parentNode.insertBefore(origEl, line);
-        }
-      }
+      claimed.add(replaceEl);
+      refreshOriginal();
+    });
+    doc.querySelectorAll(".slt-replace-line, .slt-original-line, .slt-romanization-line").forEach((el) => {
+      if (!claimed.has(el))
+        el.remove();
     });
   }
   function appendTranslationWordSpans(doc, container, translation, originalLine, wordClassName) {
@@ -4080,7 +4279,17 @@ ${text}`;
     });
   }
   var JAPANESE_TEXT_REGEX = /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/u;
-  var JAPANESE_FINAL_PARTICLES = ["\u304B\u306A", "\u3088\u306D", "\u3060\u3088", "\u3060\u306D", "\u306D", "\u306A", "\u3088", "\u304B", "\u3055"];
+  var JAPANESE_FINAL_PARTICLES = [
+    "\u304B\u306A",
+    "\u3088\u306D",
+    "\u3060\u3088",
+    "\u3060\u306D",
+    "\u306D",
+    "\u306A",
+    "\u3088",
+    "\u304B",
+    "\u3055"
+  ];
   var JAPANESE_STATE_PREFIXES = [
     "\u3053\u306E\u307E\u307E",
     "\u305D\u306E\u307E\u307E",
@@ -4322,7 +4531,7 @@ ${text}`;
       origSpan.className = "slt-vocab-original";
       origSpan.textContent = vocabPair.original;
       pair.appendChild(origSpan);
-      pair.title = `${origChunks[i]}  \u2192  ${transChunks[i]}`;
+      pair.title = `${origChunks[i]} -> ${transChunks[i]}`;
       container.appendChild(pair);
     }
   }
@@ -4466,29 +4675,39 @@ ${text}`;
     translationEl.dataset.sltGradientMode = "continuous-multiline";
   }
   function applyInterleavedMode(doc) {
-    resetDocCache(doc);
     try {
       const lines = getLyricLines(doc);
       if (!lines || lines.length === 0) {
         return;
       }
-      doc.querySelectorAll(".slt-interleaved-translation").forEach((el) => el.remove());
-      doc.querySelectorAll(".slt-sync-translation").forEach((el) => el.remove());
-      doc.querySelectorAll(".slt-romanization-line").forEach((el) => el.remove());
-      doc.querySelectorAll(".slt-original-line").forEach((el) => el.remove());
-      doc.querySelectorAll(".slt-learning-hidden").forEach((el) => el.classList.remove("slt-learning-hidden"));
+      rebuildPerLineMaps(lines);
+      if (renderSignatureUnchanged(doc, lines))
+        return;
+      resetDocCache(doc);
       const learningMode = isLearningModeActive();
+      const isVocabMode = storage.get("vocabulary-mode") === "true";
+      const claimed = /* @__PURE__ */ new Set();
       lines.forEach((line, index) => {
         try {
           const lineIndex = getLineElementIndex(line, index);
+          const lineEl = line;
           const translation = translationMap.get(lineIndex);
           const originalText = extractLineText(line);
-          const isBreak = !originalText.trim() || /^[♪♫•\-–—\s]+$/.test(originalText.trim());
-          if (!translation && !isBreak)
-            return;
-          if (translation === originalText)
-            return;
-          if (!line.parentNode) {
+          const isBreak = !originalText.trim() || /^[\s\-\u2022\u2013\u2014\u266A\u266B]+$/.test(originalText.trim());
+          let existing = line.nextElementSibling;
+          if (existing && !existing.classList.contains("slt-interleaved-translation"))
+            existing = null;
+          let existingOrig = line.previousElementSibling;
+          if (existingOrig && !existingOrig.classList.contains("slt-original-line"))
+            existingOrig = null;
+          const wants = (!!translation || isBreak) && translation !== originalText && !!line.parentNode;
+          if (!wants) {
+            if (existing)
+              existing.remove();
+            if (existingOrig)
+              existingOrig.remove();
+            lineEl.classList.remove("slt-learning-hidden");
+            lineEl.classList.remove("slt-overlay-parent");
             return;
           }
           const hasRomanization = !!romanizationMap.get(lineIndex);
@@ -4496,24 +4715,64 @@ ${text}`;
           const domIsRomanized = domLineIsRomanized(line, lineIndex);
           const learningActive = learningMode && hasRomanization && !isBreak;
           const showInjectedOriginal = learningActive && domIsRomanized && hasApiOriginal;
-          line.classList.add("slt-overlay-parent");
-          line.dataset.sltIndex = lineIndex.toString();
-          if (showInjectedOriginal) {
-            line.classList.add("slt-learning-hidden");
-          } else {
-            line.classList.remove("slt-learning-hidden");
-          }
-          const translationEl = doc.createElement("div");
-          translationEl.className = "slt-interleaved-translation";
-          translationEl.dataset.forLine = lineIndex.toString();
-          translationEl.dataset.lineIndex = lineIndex.toString();
-          const isVocabMode = storage.get("vocabulary-mode") === "true";
+          const timingInfo = lineTimingData[lineIndex];
           let pairBelowText = originalText;
           if (domIsRomanized) {
             pairBelowText = originalTextMap.get(lineIndex) || originalText;
           } else {
             pairBelowText = romanizationMap.get(lineIndex) || originalTextMap.get(lineIndex) || originalText;
           }
+          const sig = [
+            translation || "",
+            isBreak ? "B" : "",
+            isVocabMode ? "V" : "",
+            currentConfig.syncWordHighlight ? "W" : "",
+            domIsRomanized ? "R" : "",
+            showInjectedOriginal ? "O" : "",
+            pairBelowText
+          ].join("");
+          lineEl.classList.add("slt-overlay-parent");
+          lineEl.dataset.sltIndex = lineIndex.toString();
+          lineEl.classList.toggle("slt-learning-hidden", showInjectedOriginal);
+          const refreshOriginal = () => {
+            if (showInjectedOriginal) {
+              if (existingOrig) {
+                existingOrig.dataset.lineIndex = lineIndex.toString();
+                existingOrig.dataset.forLine = lineIndex.toString();
+                claimed.add(existingOrig);
+              } else {
+                const origEl = buildOriginalLine(doc, lineIndex, timingInfo, line);
+                if (origEl) {
+                  line.parentNode.insertBefore(origEl, line);
+                  claimed.add(origEl);
+                }
+              }
+            } else if (existingOrig) {
+              existingOrig.remove();
+            }
+          };
+          if (existing && existing.dataset.sltSig === sig) {
+            existing.dataset.lineIndex = lineIndex.toString();
+            existing.dataset.forLine = lineIndex.toString();
+            if (timingInfo) {
+              existing.dataset.startTime = timingInfo.startTime.toString();
+              existing.dataset.endTime = timingInfo.endTime.toString();
+            }
+            claimed.add(existing);
+            refreshOriginal();
+            return;
+          }
+          if (existing)
+            existing.remove();
+          if (existingOrig) {
+            existingOrig.remove();
+            existingOrig = null;
+          }
+          const translationEl = doc.createElement("div");
+          translationEl.className = "slt-interleaved-translation";
+          translationEl.dataset.forLine = lineIndex.toString();
+          translationEl.dataset.lineIndex = lineIndex.toString();
+          translationEl.dataset.sltSig = sig;
           if (isBreak) {
             translationEl.textContent = "\u2022 \u2022 \u2022";
             translationEl.classList.add("slt-music-break");
@@ -4529,7 +4788,6 @@ ${text}`;
               translationEl.textContent = translation || "";
             }
           }
-          const timingInfo = lineTimingData[lineIndex];
           if (timingInfo) {
             translationEl.dataset.startTime = timingInfo.startTime.toString();
             translationEl.dataset.endTime = timingInfo.endTime.toString();
@@ -4541,18 +4799,18 @@ ${text}`;
             translationEl.appendChild(qualityIndicator);
           }
           line.parentNode.insertBefore(translationEl, line.nextSibling);
-          if (showInjectedOriginal) {
-            const origEl = buildOriginalLine(doc, lineIndex, timingInfo, line);
-            if (origEl) {
-              line.parentNode.insertBefore(origEl, line);
-            }
-          }
+          claimed.add(translationEl);
+          refreshOriginal();
           if (!isBreak && currentConfig.syncWordHighlight && translation) {
             fallbackToContinuousMultilineGradient(translationEl, translation, line);
           }
         } catch (lineErr) {
           warn("Failed to process line", index, ":", lineErr);
         }
+      });
+      doc.querySelectorAll(".slt-interleaved-translation, .slt-original-line, .slt-romanization-line").forEach((el) => {
+        if (!claimed.has(el))
+          el.remove();
       });
       setupInterleavedTracking(doc);
     } catch (err) {
@@ -4826,13 +5084,10 @@ ${text}`;
     const Spicetify2 = globalThis.Spicetify;
     const currentTimeMs = Spicetify2?.Player?.getProgress?.() || 0;
     const currentTime = currentTimeMs / 1e3;
-    const lines = getLyricLines(doc);
     doc.querySelectorAll(".slt-sync-translation").forEach((transLine) => {
       const transLineEl = transLine;
-      const lineIndex = parseInt(transLineEl.dataset.lineIndex || "-1");
-      if (lineIndex < 0)
-        return;
-      const originalLine = getLineByElementIndex(lines, lineIndex);
+      const lineIndex = parseInt(transLineEl.dataset.lineIndex || "-1", 10);
+      const originalLine = lineIndex >= 0 ? getLineByElementIndex(getLyricLines(doc), lineIndex) || findOriginalLineForTranslation(transLineEl) : findOriginalLineForTranslation(transLineEl);
       if (!originalLine)
         return;
       const originalGradient = originalLine.style.getPropertyValue("--gradient-position").trim();
@@ -4901,7 +5156,7 @@ ${text}`;
     });
   }
   function renderTranslations(doc) {
-    if (!isOverlayEnabled || translationMap.size === 0)
+    if (!isOverlayEnabled || translationMap.size === 0 && !hasContentData())
       return;
     switch (currentConfig.mode) {
       case "replace":
@@ -4942,77 +5197,10 @@ ${text}`;
     lastActiveLineUpdate = now;
     try {
       if (currentConfig.mode === "interleaved" || currentConfig.mode === "replace") {
-        const cache = getDocCache(doc);
-        if (!cache.lines) {
-          cache.lines = getLyricLines(doc);
-        }
-        if (!cache.lines || cache.lines.length === 0)
-          return;
-        if (!cache.translationMap) {
-          cache.translationMap = /* @__PURE__ */ new Map();
-          const selector = currentConfig.mode === "replace" ? ".slt-replace-line" : ".slt-interleaved-translation";
-          const translationEls = doc.querySelectorAll(selector);
-          translationEls.forEach((el) => {
-            const idx = parseInt(el.dataset.forLine || el.dataset.lineIndex || "-1", 10);
-            if (idx >= 0)
-              cache.translationMap.set(idx, el);
-          });
-        }
-        if (!cache.romanizationElMap) {
-          cache.romanizationElMap = /* @__PURE__ */ new Map();
-          doc.querySelectorAll(".slt-romanization-line").forEach((el) => {
-            const idx = parseInt(el.dataset.forLine || el.dataset.lineIndex || "-1", 10);
-            if (idx >= 0)
-              cache.romanizationElMap.set(idx, el);
-          });
-        }
-        if (!cache.originalElMap) {
-          cache.originalElMap = /* @__PURE__ */ new Map();
-          doc.querySelectorAll(".slt-original-line").forEach((el) => {
-            const idx = parseInt(el.dataset.forLine || el.dataset.lineIndex || "-1", 10);
-            if (idx >= 0)
-              cache.originalElMap.set(idx, el);
-          });
-        }
-        let currentActiveIndex = -1;
-        for (let i = 0; i < cache.lines.length; i++) {
-          if (isLineActive(cache.lines[i])) {
-            currentActiveIndex = getLineElementIndex(cache.lines[i], i);
-            break;
-          }
-        }
-        if (currentActiveIndex !== cache.lastActiveIndex) {
-          if (cache.lastActiveIndex !== -1) {
-            const oldEl = cache.translationMap.get(cache.lastActiveIndex);
-            if (oldEl)
-              oldEl.classList.remove("active");
-            const oldRom = cache.romanizationElMap.get(cache.lastActiveIndex);
-            if (oldRom)
-              oldRom.classList.remove("active");
-            const oldOrig = cache.originalElMap?.get(cache.lastActiveIndex);
-            if (oldOrig)
-              oldOrig.classList.remove("active");
-          }
-          if (currentActiveIndex !== -1) {
-            const newEl = cache.translationMap.get(currentActiveIndex);
-            if (newEl) {
-              newEl.classList.add("active");
-              if (currentConfig.mode === "replace") {
-                try {
-                  newEl.scrollIntoView({ behavior: "smooth", block: "center" });
-                } catch (scrollErr) {
-                }
-              }
-            }
-            const newRom = cache.romanizationElMap.get(currentActiveIndex);
-            if (newRom)
-              newRom.classList.add("active");
-            const newOrig = cache.originalElMap?.get(currentActiveIndex);
-            if (newOrig)
-              newOrig.classList.add("active");
-          }
-          cache.lastActiveIndex = currentActiveIndex;
-        }
+        doc.querySelectorAll(".slt-replace-line, .slt-interleaved-translation, .slt-romanization-line, .slt-original-line").forEach((el) => {
+          const orig = adjacentOriginalLine(el);
+          el.classList.toggle("active", !!orig && isLineActive(orig));
+        });
       }
     } catch (err) {
     }
@@ -5025,7 +5213,7 @@ ${text}`;
       activeSyncRafId = null;
       return;
     }
-    if (translationMap.size === 0) {
+    if (translationMap.size === 0 && !hasContentData()) {
       activeSyncRafId = requestAnimationFrame(syncLoop);
       return;
     }
@@ -5172,6 +5360,7 @@ ${text}`;
     });
     activeLineObservers.clear();
     const cleanup = (doc) => {
+      lastRenderSigMap.delete(doc);
       const overlay = doc.getElementById("spicy-translate-overlay");
       if (overlay)
         overlay.remove();
@@ -5231,6 +5420,11 @@ ${text}`;
     translationMap.clear();
     romanizationMap.clear();
     originalTextMap.clear();
+    translationByContent.clear();
+    romanizationByContent.clear();
+    originalByContent.clear();
+    qualityByContent.clear();
+    timingByContent.clear();
     document.body.classList.remove("slt-overlay-active");
   }
   function updateOverlayContent(translations) {
@@ -5273,7 +5467,7 @@ ${text}`;
     indicator.appendChild(dot);
     const label = doc.createElement("span");
     label.className = "slt-qi-label";
-    label.textContent = isCached ? `Cached \xB7 ${apiLabel}` : `Fresh \xB7 ${apiLabel}`;
+    label.textContent = isCached ? `Cached \xC2\xB7 ${apiLabel}` : `Fresh \xC2\xB7 ${apiLabel}`;
     indicator.appendChild(label);
     const tooltipParts = [];
     tooltipParts.push(`Source: ${isCached ? "Cached" : "Live API"}`);
@@ -6540,7 +6734,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     if (metadata?.LoadedVersion) {
       return metadata.LoadedVersion;
     }
-    return true ? "2.0.6" : "0.0.0";
+    return true ? "2.0.7" : "0.0.0";
   };
   var CURRENT_VERSION = getLoadedVersion();
   var GITHUB_REPO = "7xeh/SpicyLyricTranslator";
@@ -7716,8 +7910,62 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   var keyboardShortcutListener = null;
   var SPICY_LYRICS_CACHE_NAME2 = "SpicyLyrics_LyricsStore";
   var romanizationRepairAttempts = /* @__PURE__ */ new Set();
+  var contentTranslation = /* @__PURE__ */ new Map();
+  var contentQuality = /* @__PURE__ */ new Map();
+  var coveredKeys = /* @__PURE__ */ new Set();
+  var fillGapsInFlight = false;
+  var lastSkippedTranslation = null;
   function normalizeMatchKey(text) {
     return (text || "").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "").trim();
+  }
+  function buildLyricsKey(lines) {
+    let hash = 2166136261;
+    let count = 0;
+    for (const rawLine of lines) {
+      const line = (rawLine || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (!line)
+        continue;
+      count++;
+      const value = `${line}\u241E`;
+      for (let i = 0; i < value.length; i++) {
+        hash ^= value.charCodeAt(i);
+        hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+      }
+    }
+    return `${count}:${(hash >>> 0).toString(36)}`;
+  }
+  function matchesSkippedTranslation(trackUri, targetLanguage, romanizationOn, lyricsKey) {
+    if (!lastSkippedTranslation)
+      return false;
+    if (lastSkippedTranslation.trackUri !== trackUri)
+      return false;
+    if (lastSkippedTranslation.targetLanguage !== targetLanguage)
+      return false;
+    if (lastSkippedTranslation.romanizationOn !== romanizationOn)
+      return false;
+    return lastSkippedTranslation.lyricsKey === lyricsKey || lastSkippedTranslation.domLyricsKey === lyricsKey;
+  }
+  var lastSkipNotifyKey = null;
+  function shouldNotifySkip(trackUri, targetLanguage, romanizationOn) {
+    const key = `${trackUri ?? ""}${targetLanguage}${romanizationOn ? "1" : "0"}`;
+    if (lastSkipNotifyKey === key)
+      return false;
+    lastSkipNotifyKey = key;
+    return true;
+  }
+  function rememberSkippedTranslation(trackUri, targetLanguage, romanizationOn, lyricsKey, domLyricsKey, detectedLanguage) {
+    lastSkippedTranslation = {
+      trackUri,
+      targetLanguage,
+      romanizationOn,
+      lyricsKey,
+      domLyricsKey,
+      detectedLanguage
+    };
+    state.lastTranslatedSongUri = trackUri;
+    lastTranslatedRomanizationState = romanizationOn;
+    if (detectedLanguage)
+      state.detectedLanguage = detectedLanguage;
   }
   function lookupWithFallback(map, text) {
     if (!text)
@@ -7772,11 +8020,33 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     return null;
   }
   function isRomanizationActive() {
-    const btn = document.querySelector("#RomanizationToggle");
-    if (btn) {
-      if (btn.classList.contains("active"))
-        return true;
+    const readUiState = (raw) => {
+      if (!raw)
+        return null;
+      try {
+        const obj = JSON.parse(raw);
+        if (obj && typeof obj.romanization === "boolean")
+          return obj.romanization;
+      } catch (e) {
+      }
+      return null;
+    };
+    try {
+      const spicetifyStorage = globalThis.Spicetify?.LocalStorage;
+      const fromSpicetify = readUiState(spicetifyStorage?.get?.("SL:uiState"));
+      if (fromSpicetify !== null)
+        return fromSpicetify;
+    } catch (e) {
     }
+    try {
+      const fromLocal = readUiState(localStorage.getItem("SL:uiState"));
+      if (fromLocal !== null)
+        return fromLocal;
+    } catch (e) {
+    }
+    const btn = document.querySelector("#RomanizationToggle");
+    if (btn && btn.classList.contains("active"))
+      return true;
     const keys = [
       "SpicyLyrics-romanization",
       "SpicyLyrics:romanization",
@@ -8057,10 +8327,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   }
   function getLyricElementIndex(line, fallbackIndex) {
     const ownDataset = line.dataset;
-    const ownIndex = parseNonNegativeIndex2(ownDataset.sltIndex || ownDataset.lineIndex);
+    const ownIndex = parseNonNegativeIndex2(ownDataset?.sltIndex || ownDataset?.lineIndex);
     if (ownIndex !== null)
       return ownIndex;
-    const wrapper = line.closest("[data-index]");
+    const wrapper = typeof line.closest === "function" ? line.closest("[data-index]") : null;
     const wrapperIndex = parseNonNegativeIndex2(wrapper?.dataset.index);
     return wrapperIndex ?? fallbackIndex;
   }
@@ -8107,19 +8377,6 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           apiVocalLineData
         };
       }
-      const domCount = domLineTexts.length;
-      if (!virtualizedDom && domCount > 0 && apiVocalTexts.length > domCount) {
-        apiVocalTexts = apiVocalTexts.slice(0, domCount);
-        if (apiVocalLineData)
-          apiVocalLineData = apiVocalLineData.slice(0, domCount);
-      } else if (!virtualizedDom && domCount > 0 && apiVocalTexts.length < domCount) {
-        for (let i = apiVocalTexts.length; i < domCount; i++) {
-          apiVocalTexts.push("");
-          if (apiVocalLineData) {
-            apiVocalLineData.push(emptyLineData());
-          }
-        }
-      }
       const hasOriginalText = apiVocalTexts.some((text) => text.trim().length > 0);
       return {
         canTranslate: hasOriginalText,
@@ -8130,7 +8387,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         apiVocalLineData
       };
     }
-    const useApiLines = Boolean(apiVocalTexts && (apiVocalTexts.length === domLineTexts.length || virtualizedDom));
+    const useApiLines = Boolean(apiVocalTexts && apiVocalTexts.length > 0);
     const lineTexts = useApiLines ? apiVocalTexts : domLineTexts;
     return {
       canTranslate: lineTexts.some((text) => text.trim().length > 0),
@@ -8232,9 +8489,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       }
       if (hasRealTranslation) {
         const lines2 = getLyricsLines();
-        if (lines2.length > 0 && !document.querySelector(".slt-interleaved-translation, .slt-replace-line, .spicy-translated")) {
+        if (lines2.length > 0) {
           applyTranslations(lines2);
         }
+        void fillVisibleGaps();
         return;
       }
       state.lastTranslatedSongUri = null;
@@ -8267,6 +8525,13 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       }
       const currentTrackUri2 = getCurrentTrackUri();
       const romanizationOn = isRomanizationActive();
+      const domLyricsKey = buildLyricsKey(nonEmptyDomTexts);
+      if (matchesSkippedTranslation(currentTrackUri2, state.targetLanguage, romanizationOn, domLyricsKey)) {
+        removeTranslations();
+        state.lastTranslatedSongUri = currentTrackUri2;
+        lastTranslatedRomanizationState = romanizationOn;
+        return;
+      }
       let preApiSkipCheck = null;
       if (!romanizationOn) {
         preApiSkipCheck = await shouldSkipTranslation(nonEmptyDomTexts, state.targetLanguage, currentTrackUri2 || void 0);
@@ -8275,9 +8540,15 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         }
         if (preApiSkipCheck.skip && getConfidentNonTargetLineIndexes(domLineTexts, state.targetLanguage).length === 0) {
           removeTranslations();
-          state.lastTranslatedSongUri = currentTrackUri2;
-          lastTranslatedRomanizationState = romanizationOn;
-          if (state.showNotifications && Spicetify.showNotification) {
+          rememberSkippedTranslation(
+            currentTrackUri2,
+            state.targetLanguage,
+            romanizationOn,
+            domLyricsKey,
+            domLyricsKey,
+            preApiSkipCheck.detectedLanguage
+          );
+          if (state.showNotifications && Spicetify.showNotification && shouldNotifySkip(currentTrackUri2, state.targetLanguage, romanizationOn)) {
             Spicetify.showNotification(preApiSkipCheck.reason || "Lyrics already in target language");
           }
           return;
@@ -8319,7 +8590,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           }
         }
       }
-      let useApiLines = Boolean(apiVocalTexts && (apiVocalTexts.length === lines.length || virtualizedDom));
+      let useApiLines = Boolean(apiVocalTexts && apiVocalTexts.length > 0);
       if (!useApiLines && romanizationOn && apiVocalTexts && apiVocalTexts.length > 0) {
         for (let retryAttempt = 0; retryAttempt < 2; retryAttempt++) {
           await new Promise((resolve) => setTimeout(resolve, 400));
@@ -8419,6 +8690,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       if (nonEmptyTexts.length === 0) {
         return;
       }
+      const sourceLyricsKey = buildLyricsKey(nonEmptyTexts);
       const detectedLang = apiLanguage || cachedSourceLanguage || state.detectedLanguage || void 0;
       let skipCheck;
       if (romanizationOn && apiLanguage) {
@@ -8440,14 +8712,26 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         state.detectedLanguage = skipCheck.detectedLanguage;
       let translations;
       if (skipCheck.skip) {
+        if (matchesSkippedTranslation(currentTrackUri2, state.targetLanguage, romanizationOn, sourceLyricsKey)) {
+          removeTranslations();
+          state.lastTranslatedSongUri = currentTrackUri2;
+          lastTranslatedRomanizationState = romanizationOn;
+          return;
+        }
         const nonTargetIndexes = getConfidentNonTargetLineIndexes(lineTexts, state.targetLanguage);
         if (nonTargetIndexes.length === 0) {
           removeTranslations();
           state.isTranslating = false;
-          state.lastTranslatedSongUri = currentTrackUri2;
-          lastTranslatedRomanizationState = romanizationOn;
+          rememberSkippedTranslation(
+            currentTrackUri2,
+            state.targetLanguage,
+            romanizationOn,
+            sourceLyricsKey,
+            domLyricsKey,
+            skipCheck.detectedLanguage
+          );
           restoreButtonState();
-          if (state.showNotifications && Spicetify.showNotification) {
+          if (state.showNotifications && Spicetify.showNotification && shouldNotifySkip(currentTrackUri2, state.targetLanguage, romanizationOn)) {
             Spicetify.showNotification(skipCheck.reason || "Lyrics already in target language");
           }
           return;
@@ -8487,11 +8771,31 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       if (currentTrackUri2 && getCurrentTrackUri() !== currentTrackUri2) {
         return;
       }
+      const hasMeaningfulTranslation = translations.some(
+        (result) => result.wasTranslated && normalizeForComparison(result.originalText) !== normalizeForComparison(result.translatedText)
+      );
+      const sameLanguagePassthrough = !hasMeaningfulTranslation && translations.some(
+        (result) => result.detectedLanguage && isSameLanguage(result.detectedLanguage, state.targetLanguage)
+      );
+      if (sameLanguagePassthrough) {
+        removeTranslations();
+        rememberSkippedTranslation(
+          currentTrackUri2,
+          state.targetLanguage,
+          romanizationOn,
+          sourceLyricsKey,
+          domLyricsKey,
+          translations.find((result) => result.detectedLanguage)?.detectedLanguage
+        );
+        return;
+      }
+      lastSkippedTranslation = null;
+      lastSkipNotifyKey = null;
       state.translatedLyrics.clear();
-      const translationByContent = /* @__PURE__ */ new Map();
-      const qualityByContent = /* @__PURE__ */ new Map();
-      const romanizationByContent = /* @__PURE__ */ new Map();
-      const originalByContent = /* @__PURE__ */ new Map();
+      const translationByContent2 = /* @__PURE__ */ new Map();
+      const qualityByContent2 = /* @__PURE__ */ new Map();
+      const romanizationByContent2 = /* @__PURE__ */ new Map();
+      const originalByContent2 = /* @__PURE__ */ new Map();
       translations.forEach((result, index) => {
         const source = lineTexts[index];
         const lineData = useApiLines && apiVocalLineData ? apiVocalLineData[index] : void 0;
@@ -8501,12 +8805,12 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         if (source && source.trim()) {
           state.translatedLyrics.set(source, translated);
           if (sourceNorm)
-            translationByContent.set(sourceNorm, translated);
+            translationByContent2.set(sourceNorm, translated);
         }
         if (lineData?.romanizedText && lineData.romanizedText.trim()) {
           state.translatedLyrics.set(lineData.romanizedText, translated);
           if (romNorm)
-            translationByContent.set(romNorm, translated);
+            translationByContent2.set(romNorm, translated);
         }
         if (result.wasTranslated) {
           const meta = {
@@ -8516,7 +8820,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           };
           for (const norm of [sourceNorm, romNorm]) {
             if (norm)
-              qualityByContent.set(norm, meta);
+              qualityByContent2.set(norm, meta);
           }
         }
         if (lineData) {
@@ -8526,9 +8830,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             if (!norm)
               continue;
             if (romanized.trim())
-              romanizationByContent.set(norm, romanized);
+              romanizationByContent2.set(norm, romanized);
             if (original.trim())
-              originalByContent.set(norm, original);
+              originalByContent2.set(norm, original);
           }
         }
       });
@@ -8556,9 +8860,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             if (!norm)
               continue;
             if (romanized.trim())
-              romanizationByContent.set(norm, romanized);
+              romanizationByContent2.set(norm, romanized);
             if (original.trim())
-              originalByContent.set(norm, original);
+              originalByContent2.set(norm, original);
           }
         }
       }
@@ -8572,13 +8876,37 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             const norm = normalizeMatchKey(key);
             if (!norm)
               continue;
-            if (romanized.trim() && !romanizationByContent.has(norm))
-              romanizationByContent.set(norm, romanized);
-            if (original.trim() && !originalByContent.has(norm))
-              originalByContent.set(norm, original);
+            if (romanized.trim() && !romanizationByContent2.has(norm))
+              romanizationByContent2.set(norm, romanized);
+            if (original.trim() && !originalByContent2.has(norm))
+              originalByContent2.set(norm, original);
           }
         }
       }
+      const timingByContent2 = /* @__PURE__ */ new Map();
+      const addTimingByContent = (data) => {
+        if (!data)
+          return;
+        for (const ld of data) {
+          if (!ld)
+            continue;
+          for (const key of [ld.text, ld.romanizedText]) {
+            const norm = normalizeMatchKey(key);
+            if (norm && !timingByContent2.has(norm))
+              timingByContent2.set(norm, ld);
+          }
+        }
+      };
+      addTimingByContent(apiVocalLineData);
+      addTimingByContent(apiLineData);
+      setTranslationContentData(translationByContent2);
+      setRomanizationContentData(romanizationByContent2);
+      setOriginalContentData(originalByContent2);
+      setQualityContentData(qualityByContent2);
+      setTimingContentData(timingByContent2);
+      contentTranslation = translationByContent2;
+      contentQuality = qualityByContent2;
+      coveredKeys = new Set(translationByContent2.keys());
       const buildIndexMapsForLines = (targetLines) => {
         const translationsByIdx = /* @__PURE__ */ new Map();
         const qualityByIdx = /* @__PURE__ */ new Map();
@@ -8590,7 +8918,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           const domText = extractLineText2(line);
           if (!domText)
             return;
-          let translation = lookupWithFallback(translationByContent, domText);
+          let translation = lookupWithFallback(translationByContent2, domText);
           if (!translation && translations[lineIndex]) {
             translation = translations[lineIndex].translatedText;
           } else if (!translation && translations[domIdx]) {
@@ -8598,7 +8926,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           }
           if (translation)
             translationsByIdx.set(lineIndex, translation);
-          let meta = lookupWithFallback(qualityByContent, domText);
+          let meta = lookupWithFallback(qualityByContent2, domText);
           if (!meta) {
             const result = translations[lineIndex] || translations[domIdx];
             if (result?.wasTranslated) {
@@ -8611,7 +8939,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           }
           if (meta)
             qualityByIdx.set(lineIndex, meta);
-          let rom = lookupWithFallback(romanizationByContent, domText);
+          let rom = lookupWithFallback(romanizationByContent2, domText);
           if (!rom && apiVocalLineData && apiVocalLineData[lineIndex]?.romanizedText) {
             rom = apiVocalLineData[lineIndex].romanizedText;
           } else if (!rom && apiVocalLineData && apiVocalLineData[domIdx]?.romanizedText) {
@@ -8619,7 +8947,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           }
           if (rom)
             romanizationByIdx.set(lineIndex, rom);
-          let orig = lookupWithFallback(originalByContent, domText);
+          let orig = lookupWithFallback(originalByContent2, domText);
           if (!orig && apiVocalLineData && apiVocalLineData[lineIndex]?.text) {
             orig = apiVocalLineData[lineIndex].text;
           } else if (!orig && apiVocalLineData && apiVocalLineData[domIdx]?.text) {
@@ -8647,6 +8975,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       } else {
         applyTranslations(lines);
       }
+      void fillVisibleGaps();
       if (state.showNotifications && Spicetify.showNotification) {
         const notif = buildTranslationNotification(translations, currentTrackUri2, state.targetLanguage);
         if (notif)
@@ -8768,6 +9097,71 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     }
     updateOverlayContent(translationMapByIndex);
   }
+  async function fillVisibleGaps() {
+    if (!state.isEnabled || state.isTranslating || fillGapsInFlight)
+      return;
+    if (isRomanizationActive())
+      return;
+    if (coveredKeys.size === 0 && contentTranslation.size === 0)
+      return;
+    const lines = getLyricsLines();
+    if (lines.length === 0)
+      return;
+    const missing = [];
+    const missingKeys = /* @__PURE__ */ new Set();
+    lines.forEach((line) => {
+      const text = extractLineText2(line);
+      if (!text || !text.trim())
+        return;
+      if (/^[♪♫•\-–—\s]+$/.test(text.trim()))
+        return;
+      const key = normalizeMatchKey(text);
+      if (!key || coveredKeys.has(key) || missingKeys.has(key))
+        return;
+      missingKeys.add(key);
+      missing.push(text);
+    });
+    if (missing.length === 0)
+      return;
+    fillGapsInFlight = true;
+    try {
+      const currentTrackUri = getCurrentTrackUri();
+      const results = await translateLyrics(missing, state.targetLanguage, currentTrackUri || void 0, state.detectedLanguage || void 0, true);
+      if (currentTrackUri && getCurrentTrackUri() !== currentTrackUri)
+        return;
+      let added = false;
+      results.forEach((result, i) => {
+        const source = missing[i];
+        const key = normalizeMatchKey(source);
+        if (!key)
+          return;
+        coveredKeys.add(key);
+        const translated = result.translatedText;
+        if (source.trim())
+          state.translatedLyrics.set(source, translated);
+        contentTranslation.set(key, translated);
+        if (result.wasTranslated) {
+          contentQuality.set(key, {
+            source: result.source || "api",
+            api: result.apiProvider || state.preferredApi,
+            detectedLanguage: state.detectedLanguage || result.detectedLanguage || void 0
+          });
+        }
+        added = true;
+      });
+      if (added) {
+        setTranslationContentData(contentTranslation);
+        setQualityContentData(contentQuality);
+        const fresh = getLyricsLines();
+        if (fresh.length > 0)
+          applyTranslations(fresh);
+      }
+    } catch (err) {
+      warn("Failed to fill visible translation gaps:", err);
+    } finally {
+      fillGapsInFlight = false;
+    }
+  }
   function reapplyTranslations() {
     if (state.translatedLyrics.size === 0)
       return;
@@ -8788,6 +9182,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   function removeTranslations() {
     if (isOverlayActive())
       disableOverlay();
+    contentTranslation = /* @__PURE__ */ new Map();
+    contentQuality = /* @__PURE__ */ new Map();
+    coveredKeys = /* @__PURE__ */ new Set();
     const docs = [document];
     const pip = getPIPWindow2();
     if (pip)
