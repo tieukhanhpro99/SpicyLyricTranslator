@@ -85,11 +85,11 @@ function hasContentData(): boolean {
 function rebuildPerLineMaps(lines: ArrayLike<Element>): void {
     if (!hasContentData()) return;
 
-    translationMap = new Map();
-    romanizationMap = new Map();
-    originalTextMap = new Map();
-    qualityMap = new Map();
-    lineTimingData = [];
+    const nextTranslationMap = new Map(translationMap);
+    const nextRomanizationMap = new Map(romanizationMap);
+    const nextOriginalTextMap = new Map(originalTextMap);
+    const nextQualityMap = new Map(qualityMap);
+    const nextLineTimingData = [...lineTimingData];
 
     for (let index = 0; index < lines.length; index++) {
         const lineIndex = getLineElementIndex(lines[index], index);
@@ -97,20 +97,26 @@ function rebuildPerLineMaps(lines: ArrayLike<Element>): void {
         if (!text) continue;
 
         const t = lookupByContent(translationByContent, text);
-        if (t) translationMap.set(lineIndex, t);
+        if (t) nextTranslationMap.set(lineIndex, t);
 
         const r = lookupByContent(romanizationByContent, text);
-        if (r) romanizationMap.set(lineIndex, r);
+        if (r) nextRomanizationMap.set(lineIndex, r);
 
         const o = lookupByContent(originalByContent, text);
-        if (o) originalTextMap.set(lineIndex, o);
+        if (o) nextOriginalTextMap.set(lineIndex, o);
 
         const q = lookupByContent(qualityByContent, text);
-        if (q) qualityMap.set(lineIndex, q);
+        if (q) nextQualityMap.set(lineIndex, q);
 
         const tim = lookupByContent(timingByContent, text);
-        if (tim) lineTimingData[lineIndex] = tim;
+        if (tim) nextLineTimingData[lineIndex] = tim;
     }
+
+    translationMap = nextTranslationMap;
+    romanizationMap = nextRomanizationMap;
+    originalTextMap = nextOriginalTextMap;
+    qualityMap = nextQualityMap;
+    lineTimingData = nextLineTimingData;
 }
 
 export function setTranslationContentData(data: Map<string, string>): void {
