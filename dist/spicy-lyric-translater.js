@@ -2909,6 +2909,15 @@ ${text}`;
     }
     const sameLangFromHint = detectedSourceLang && detectedSourceLang !== "auto" && detectedSourceLang !== "unknown" && isSameLanguage(detectedSourceLang, targetLang);
     const confidentLineLangs = Array.from(lineLanguages);
+    const NON_LATIN_SCRIPT_RE = /[぀-ヿ㐀-䶿一-鿿가-힯ᄀ-ᇿЀ-ӿ؀-ۿ֐-׿฀-๿ऀ-ॿͰ-Ͽ]/;
+    const targetBase = targetLang.toLowerCase().split("-")[0].split("_")[0];
+    const targetIsLatin = !["ja", "zh", "ko", "ru", "uk", "bg", "sr", "mk", "be", "ar", "he", "th", "hi", "el"].includes(targetBase);
+    const hasConfidentNonTargetLine = lines.some((line) => {
+      if (!line || !line.trim())
+        return false;
+      const hasNonLatin = NON_LATIN_SCRIPT_RE.test(line);
+      return targetIsLatin ? hasNonLatin : !hasNonLatin && /[A-Za-z]/.test(line);
+    });
     const sameLangFromLines = !hasMixedSourceLanguages && confidentLineLangs.length > 0 && confidentLineLangs.every((lang) => isSameLanguage(lang, targetLang));
     let sameLangFromCorpus = false;
     if (!sameLangFromHint && !sameLangFromLines) {
@@ -2920,11 +2929,14 @@ ${text}`;
         }
       }
     }
-    if (sameLangFromHint || sameLangFromLines || sameLangFromCorpus) {
+    if ((sameLangFromHint || sameLangFromLines || sameLangFromCorpus) && !hasConfidentNonTargetLine) {
       if (currentTrackUri && !skipTrackCache) {
         deleteTrackCache(currentTrackUri, targetLang);
       }
       return buildSameLanguagePassthrough(lines, targetLang, detectedSourceLang || targetLang);
+    }
+    if (hasConfidentNonTargetLine && detectedSourceLang && isSameLanguage(detectedSourceLang, targetLang)) {
+      detectedSourceLang = void 0;
     }
     if (currentTrackUri && !skipTrackCache) {
       const trackCache = getTrackCache(currentTrackUri, targetLang);
@@ -3577,7 +3589,9 @@ ${text}`;
         let lineText = "";
         let romanizedText = "";
         let anyRomanized = false;
-        for (const syllable of group.Lead.Syllables) {
+        const syllables = group.Lead.Syllables;
+        for (let i = 0; i < syllables.length; i++) {
+          const syllable = syllables[i];
           wordTimings.push({
             text: syllable.Text,
             startTime: syllable.StartTime,
@@ -3795,6 +3809,9 @@ ${text}`;
         if (key.length < 4)
           continue;
         if (norm.includes(key) || key.includes(norm)) {
+          const ratio = Math.min(key.length, norm.length) / Math.max(key.length, norm.length);
+          if (ratio < 0.8)
+            continue;
           if (!best || key.length > best.key.length) {
             best = { key, value };
           }
@@ -4263,7 +4280,7 @@ ${text}`;
     }
     const originalWords = getWordUnits(originalLine);
     const ratio = translatedWords.length / Math.max(originalWords.length, 1);
-    const shouldAnimateLetters = wordClassName === "slt-sync-word" && lineHasSyllableStructure(originalLine);
+    const shouldAnimateLetters = false;
     translatedWords.forEach((word, wordIndex) => {
       const span = doc.createElement("span");
       span.className = wordClassName;
@@ -4493,6 +4510,17 @@ ${text}`;
     if (JAPANESE_TEXT_REGEX.test(original)) {
       return alignJapaneseVocabularyPairs(sourceUnits, translatedWords, original, translated);
     }
+    const ratio = translatedWords.length / Math.max(sourceUnits.length, 1);
+    const NON_LATIN_REGEX = /[぀-ヿ㐀-䶿一-鿿가-힯ᄀ-ᇿ؀-ۿ֐-׿Ѐ-ӿ฀-๿Ͱ-Ͽ]/;
+    if (ratio < 0.7 || ratio > 1.45 || NON_LATIN_REGEX.test(original)) {
+      return [{
+        original,
+        translated,
+        confidence: "low",
+        sourceIndex: 0,
+        translatedStart: 0
+      }];
+    }
     const pairCount = Math.min(sourceUnits.length, translatedWords.length);
     const originalChunks = distributeWords(sourceUnits, pairCount);
     const translatedChunks = distributeWords(translatedWords, pairCount);
@@ -4558,8 +4586,8 @@ ${text}`;
     }
     return result;
   }
-  function lineHasSyllableStructure(line) {
-    return !!line.querySelector(".syllable, .letterGroup .letter, .word-group .syllable");
+  function lineHasWordStructure(line) {
+    return !!line.querySelector(".word:not(.dot), .letterGroup, .word-group, .syllable");
   }
   function splitIntoGraphemes(text) {
     const segmenterCtor = globalThis.Intl?.Segmenter;
@@ -4670,7 +4698,7 @@ ${text}`;
     return words.some((wordEl, index) => index > 0 && Math.abs(wordEl.offsetTop - firstTop) > 2);
   }
   function fallbackToContinuousMultilineGradient(translationEl, translationText, originalLine) {
-    if (lineHasSyllableStructure(originalLine))
+    if (lineHasWordStructure(originalLine))
       return;
     if (!translationEl.querySelector(":scope > .slt-sync-word"))
       return;
@@ -4958,6 +4986,10 @@ ${text}`;
     const isNotSung = originalLine.classList.contains("NotSung");
     const originalWordGradients = getOriginalWordGradients(originalLine);
     const overallProgress = getOverallWordGradientProgress(originalLine);
+    const originalText = originalLine.textContent || "";
+    const originalHasNonLatin = /[぀-ヿ㐀-䶿一-鿿가-힯ᄀ-ᇿ؀-ۿ֐-׿Ѐ-ӿ฀-๿Ͱ-Ͽ]/.test(originalText);
+    const wordRatio = translatedWords.length / Math.max(originalWordGradients.length, 1);
+    const useSmoothFill = originalHasNonLatin || wordRatio < 0.7 || wordRatio > 1.45;
     const PROGRESSION_SMOOTHING = 0.68;
     const PROGRESSION_SNAP_DELTA = 8;
     const LATCH_WHITE_THRESHOLD = 96;
@@ -5004,7 +5036,7 @@ ${text}`;
         delete wordEl.dataset.sltLatchedWhite;
       } else {
         const mappedIndex2 = parseInt(wordEl.dataset.originalIndex || "-1", 10);
-        const mappedGradient = mappedIndex2 >= 0 && mappedIndex2 < originalWordGradients.length ? originalWordGradients[mappedIndex2] : NaN;
+        const mappedGradient = !useSmoothFill && mappedIndex2 >= 0 && mappedIndex2 < originalWordGradients.length ? originalWordGradients[mappedIndex2] : NaN;
         if (!isNaN(mappedGradient)) {
           const groupedIndexes = groupedTranslatedWordIndexes.get(mappedIndex2) || [];
           const groupSize = groupedIndexes.length;
@@ -5504,7 +5536,6 @@ body.slt-overlay-active .LyricsContent {}
     z-index: 10;
 }
 
-
 .spicy-pip-wrapper .slt-interleaved-translation {
     font-size: calc(0.82em * var(--slt-overlay-font-scale, 1));
 }
@@ -5521,7 +5552,6 @@ body.slt-overlay-active .LyricsContent {}
 body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
     font-size: calc(0.65em * var(--slt-overlay-font-scale, 1));
 }
-
 
 .slt-interleaved-translation.slt-music-break {
     color: rgba(255, 255, 255, 0.35) !important;
@@ -5651,6 +5681,23 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-romanization-line {
 
   // src/styles/main.ts
   var styles = `
+:root {
+    --slt-radius: 16px;
+    --slt-radius-sm: 11px;
+    --slt-hairline: rgba(255, 255, 255, 0.07);
+    --slt-hairline-strong: rgba(255, 255, 255, 0.14);
+    --slt-surface: rgba(255, 255, 255, 0.04);
+    --slt-surface-hover: rgba(255, 255, 255, 0.07);
+    --slt-text: hsla(0, 0%, 100%, 0.92);
+    --slt-text-2: hsla(0, 0%, 100%, 0.58);
+    --slt-text-3: hsla(0, 0%, 100%, 0.4);
+    --slt-accent: var(--spice-button-active, #1db954);
+    --slt-ease: cubic-bezier(0.32, 0.72, 0, 1);
+    --slt-gloss:
+        inset 0 1px 0 rgba(255, 255, 255, 0.14),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
 @keyframes spicy-translate-spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
@@ -6004,127 +6051,149 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
 }
 
 .SLT_ConnectionIndicator {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     margin-right: 8px;
     position: relative;
     z-index: 100;
+    -webkit-font-smoothing: antialiased;
 }
 
 .slt-ci-button {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    border-radius: 20px;
-    background: transparent;
-    cursor: pointer;
-    transition: background 0.25s ease;
-    overflow: visible;
+    gap: 9px;
+    padding: 5px 11px 5px 10px;
+    border-radius: 999px;
+    background: var(--slt-surface, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--slt-hairline, rgba(255, 255, 255, 0.07));
+    box-shadow: var(--slt-gloss);
+    -webkit-backdrop-filter: blur(8px) saturate(1.2);
+    backdrop-filter: blur(8px) saturate(1.2);
     white-space: nowrap;
+    cursor: default;
+    transition: background 0.25s var(--slt-ease, ease), border-color 0.25s var(--slt-ease, ease);
 }
 
 .slt-ci-button:hover {
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--slt-surface-hover, rgba(255, 255, 255, 0.07));
+    border-color: var(--slt-hairline-strong, rgba(255, 255, 255, 0.14));
 }
 
 .slt-ci-dot {
-    width: 8px;
-    height: 8px;
-    min-width: 8px;
+    position: relative;
+    width: 7px;
+    height: 7px;
+    min-width: 7px;
     border-radius: 50%;
-    background: #555;
-    transition: background 0.3s ease, box-shadow 0.3s ease;
+    background: var(--slt-ci-c, #5b5b5b);
     flex-shrink: 0;
+    transition: background 0.3s var(--slt-ease, ease), box-shadow 0.3s ease;
+}
+
+.slt-ci-dot::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    box-shadow: 0 0 0 0 var(--slt-ci-c, transparent);
+    opacity: 0;
+    pointer-events: none;
 }
 
 .slt-ci-dot.slt-ci-connecting {
-    background: #888;
-    animation: slt-ci-pulse 1.5s ease-in-out infinite;
+    --slt-ci-c: #9aa0a6;
+    animation: slt-ci-pulse 1.4s ease-in-out infinite;
 }
 
-.slt-ci-dot.slt-ci-connected {
-    background: #1db954;
-    box-shadow: 0 0 6px rgba(29, 185, 84, 0.4);
-}
+.slt-ci-dot.slt-ci-connected,
+.slt-ci-dot.slt-ci-great { --slt-ci-c: #1ed760; }
+.slt-ci-dot.slt-ci-ok { --slt-ci-c: #ffd35c; }
+.slt-ci-dot.slt-ci-bad { --slt-ci-c: #ff9f45; }
+.slt-ci-dot.slt-ci-error,
+.slt-ci-dot.slt-ci-horrible { --slt-ci-c: #f1556c; }
 
-.slt-ci-dot.slt-ci-error {
-    background: #e74c3c;
-    box-shadow: 0 0 6px rgba(231, 76, 60, 0.4);
-}
-
-.slt-ci-dot.slt-ci-great {
-    background: #1db954;
-    box-shadow: 0 0 6px rgba(29, 185, 84, 0.4);
-}
-
-.slt-ci-dot.slt-ci-ok {
-    background: #ffe666;
-    box-shadow: 0 0 6px rgba(255, 230, 102, 0.35);
-}
-
-.slt-ci-dot.slt-ci-bad {
-    background: #ff944d;
-    box-shadow: 0 0 6px rgba(255, 148, 77, 0.35);
-}
-
+.slt-ci-dot.slt-ci-connected,
+.slt-ci-dot.slt-ci-great,
+.slt-ci-dot.slt-ci-ok,
+.slt-ci-dot.slt-ci-bad,
 .slt-ci-dot.slt-ci-horrible {
-    background: #e74c3c;
-    box-shadow: 0 0 6px rgba(231, 76, 60, 0.4);
+    box-shadow: 0 0 7px -1px var(--slt-ci-c);
+}
+
+.slt-ci-dot.slt-ci-connected::after,
+.slt-ci-dot.slt-ci-great::after,
+.slt-ci-dot.slt-ci-ok::after,
+.slt-ci-dot.slt-ci-bad::after,
+.slt-ci-dot.slt-ci-horrible::after {
+    animation: slt-ci-ring 2.4s var(--slt-ease, ease-out) infinite;
+}
+
+@keyframes slt-ci-ring {
+    0% { box-shadow: 0 0 0 0 var(--slt-ci-c); opacity: 0.5; }
+    70% { box-shadow: 0 0 0 5px var(--slt-ci-c); opacity: 0; }
+    100% { box-shadow: 0 0 0 5px var(--slt-ci-c); opacity: 0; }
 }
 
 @keyframes slt-ci-pulse {
-    0%, 100% { opacity: 0.4; transform: scale(0.9); }
-    50% { opacity: 1; transform: scale(1.1); }
+    0%, 100% { opacity: 0.45; transform: scale(0.85); }
+    50% { opacity: 1; transform: scale(1.05); }
 }
 
-.slt-ci-expanded {
-    display: flex;
+.slt-ci-meta {
+    display: inline-flex;
     align-items: center;
-    opacity: 1;
+    gap: 9px;
     white-space: nowrap;
 }
 
-.slt-ci-stats-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.65rem;
-    color: var(--spice-subtext, #b3b3b3);
-}
-
 .slt-ci-ping {
-    font-family: 'JetBrains Mono', 'Consolas', monospace;
-    font-size: 0.62rem;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    font-size: 0.64rem;
     font-weight: 600;
-    color: var(--spice-text, #fff);
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    color: var(--slt-text, hsla(0, 0%, 100%, 0.92));
     transition: color 0.3s ease;
 }
 
-.slt-ci-ping.slt-ci-great { color: #1db954; }
-.slt-ci-ping.slt-ci-ok { color: #ffe666; }
-.slt-ci-ping.slt-ci-bad { color: #ff944d; }
-.slt-ci-ping.slt-ci-horrible { color: #e74c3c; }
+.slt-ci-ping.slt-ci-great { color: #1ed760; }
+.slt-ci-ping.slt-ci-ok { color: #ffd35c; }
+.slt-ci-ping.slt-ci-bad { color: #ff9f45; }
+.slt-ci-ping.slt-ci-horrible { color: #f1556c; }
 
 .slt-ci-sep {
     width: 1px;
-    height: 10px;
-    background: rgba(255, 255, 255, 0.12);
+    height: 11px;
+    border-radius: 1px;
+    background: var(--slt-hairline-strong, rgba(255, 255, 255, 0.14));
     flex-shrink: 0;
 }
 
 .slt-ci-users-count {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 4px;
-    color: var(--spice-subtext, #b3b3b3);
-    font-size: 0.62rem;
-    font-weight: 500;
+    gap: 5px;
+    color: var(--slt-text-2, hsla(0, 0%, 100%, 0.58));
+    font-size: 0.64rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
 }
 
 .slt-ci-users-count svg {
-    opacity: 0.55;
+    opacity: 0.7;
+    flex-shrink: 0;
+}
+
+.slt-ci-total-count {
+    letter-spacing: 0.01em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .slt-ci-dot,
+    .slt-ci-dot::after {
+        animation: none !important;
+    }
 }
 
 body.slt-overlay-active .LyricsContent {}
@@ -6702,6 +6771,35 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
 #SpicyLyricsPage.ForcedCompactMode .simplebar-content::after {
     min-height: 100% !important;
 }
+#SpicyLyricsPage.SpicyRenderer.Fullscreen.MinimalLyricsMode:not(.CompactMode)
+  .LyricsContent:not(.HideLineBlur)
+  .line.Sung:not(.musical-line) + .slt-replace-line,
+#SpicyLyricsPage.SpicyRenderer.Fullscreen.MinimalLyricsMode:not(.CompactMode)
+  .LyricsContent:not(.HideLineBlur)
+  .line.Sung:not(.musical-line) + .slt-interleaved-translation,
+#SpicyLyricsPage.SpicyRenderer.Fullscreen.MinimalLyricsMode:not(.CompactMode)
+  .LyricsContent:not(.HideLineBlur)
+  .slt-original-line:has(+ .line.Sung:not(.musical-line)),
+#SpicyLyricsPage.SpicyRenderer.Fullscreen.MinimalLyricsMode:not(.CompactMode)
+  .LyricsContent:not(.HideLineBlur)
+  .slt-romanization-line:has(+ .line.Sung:not(.musical-line)) {
+    opacity: 0 !important;
+}
+
+#SpicyLyricsPage.SpicyRenderer.Fullscreen.MinimalLyricsMode:not(.CompactMode)
+  .LyricsContent:not(.HideLineBlur)
+  .line.NotSung:not(.musical-line) + .slt-replace-line,
+#SpicyLyricsPage.SpicyRenderer.Fullscreen.MinimalLyricsMode:not(.CompactMode)
+  .LyricsContent:not(.HideLineBlur)
+  .line.NotSung:not(.musical-line) + .slt-interleaved-translation,
+#SpicyLyricsPage.SpicyRenderer.Fullscreen.MinimalLyricsMode:not(.CompactMode)
+  .LyricsContent:not(.HideLineBlur)
+  .slt-original-line:has(+ .line.NotSung:not(.musical-line)),
+#SpicyLyricsPage.SpicyRenderer.Fullscreen.MinimalLyricsMode:not(.CompactMode)
+  .LyricsContent:not(.HideLineBlur)
+  .slt-romanization-line:has(+ .line.NotSung:not(.musical-line)) {
+    opacity: 0.5 !important;
+}
 `;
   function injectStyles() {
     const existingStyle = document.getElementById("spicy-lyric-translator-styles");
@@ -6712,6 +6810,112 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     styleElement.id = "spicy-lyric-translator-styles";
     styleElement.textContent = styles + getOverlayStyles();
     document.head.appendChild(styleElement);
+  }
+
+  // src/utils/modal.ts
+  var CLOSE_SVG = '<svg width="18" height="18" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><title>Close</title><path d="M31.098 29.794L16.955 15.65 31.097 1.51 29.683.093 15.54 14.237 1.4.094-.016 1.508 14.126 15.65-.016 29.795l1.414 1.414L15.54 17.065l14.144 14.143" fill="currentColor" fill-rule="evenodd"></path></svg>';
+  var activeModal = null;
+  var activeOnClose = null;
+  function escapeForHtml(text) {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function spicyLyricsAvailable() {
+    try {
+      if (globalThis.SpicyLyrics)
+        return true;
+      if (typeof customElements !== "undefined" && customElements.get("sl-generic-modal"))
+        return true;
+      if (typeof document !== "undefined" && document.querySelector("#SpicyLyricsPage, sl-generic-modal, .sl-modal-overlay"))
+        return true;
+    } catch {
+    }
+    return false;
+  }
+  function hideModal() {
+    if (activeModal) {
+      const modal = activeModal;
+      const onClose = activeOnClose;
+      activeModal = null;
+      activeOnClose = null;
+      const finish = () => {
+        try {
+          modal.remove();
+        } catch {
+        }
+        if (typeof onClose === "function") {
+          try {
+            onClose();
+          } catch {
+          }
+        }
+      };
+      const overlay = modal.querySelector(".sl-modal-overlay-animated");
+      if (overlay) {
+        overlay.classList.remove("Active");
+        setTimeout(finish, 250);
+      } else {
+        finish();
+      }
+      return;
+    }
+    const spicetify = globalThis.Spicetify;
+    spicetify?.PopupModal?.hide();
+  }
+  function displayModal(options) {
+    if (!spicyLyricsAvailable()) {
+      const spicetify = globalThis.Spicetify;
+      spicetify?.PopupModal?.display({
+        title: options.title,
+        content: options.content,
+        isLarge: options.isLarge
+      });
+      return;
+    }
+    if (activeModal) {
+      try {
+        activeModal.remove();
+      } catch {
+      }
+      activeModal = null;
+      activeOnClose = null;
+    }
+    const host = document.createElement("sl-generic-modal");
+    host.classList.add("SpicyLyricsModal");
+    const containerClass = options.isLarge ? "sl-modal-container-large" : "sl-modal-container";
+    host.innerHTML = `
+<div class="sl-modal-overlay sl-modal-overlay-animated" style="z-index: 100;">
+    <div class="sl-modal" tabindex="-1" role="dialog" aria-modal="true" aria-label="${escapeForHtml(options.title || "")}">
+        <div class="${containerClass}">
+            <div class="sl-modal-header">
+                <h1 class="sl-modal-title">${escapeForHtml(options.title || "")}</h1>
+                <button aria-label="Close" class="sl-modal-close-btn" type="button">${CLOSE_SVG}</button>
+            </div>
+            <div class="sl-modal-main-section">
+                <main class="sl-modal-content"></main>
+            </div>
+        </div>
+    </div>
+</div>`;
+    const main = host.querySelector("main.sl-modal-content");
+    if (main) {
+      if (typeof options.content === "string") {
+        main.innerHTML = options.content;
+      } else if (options.content instanceof Node) {
+        main.append(options.content);
+      }
+    }
+    activeModal = host;
+    activeOnClose = options.onClose ?? null;
+    host.querySelector(".sl-modal-close-btn")?.addEventListener("click", () => hideModal());
+    const overlay = host.querySelector(".sl-modal-overlay");
+    overlay?.addEventListener("click", (event) => {
+      if (event.target === event.currentTarget)
+        hideModal();
+    });
+    document.body.append(host);
+    setTimeout(() => {
+      host.querySelector(".sl-modal-overlay-animated")?.classList.add("Active");
+    }, 50);
   }
 
   // src/utils/updater.ts
@@ -6739,7 +6943,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     if (metadata?.LoadedVersion) {
       return metadata.LoadedVersion;
     }
-    return true ? "2.0.7" : "0.0.0";
+    return true ? "2.0.8" : "0.0.0";
   };
   var CURRENT_VERSION = getLoadedVersion();
   var GITHUB_REPO = "7xeh/SpicyLyricTranslator";
@@ -6982,7 +7186,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           const reloadBtn = document.getElementById("slt-reload-now");
           if (cancelBtn) {
             cancelBtn.addEventListener("click", () => {
-              Spicetify.PopupModal.hide();
+              hideModal();
               updateState.isUpdating = false;
             });
           }
@@ -7023,7 +7227,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 50% { transform: translateX(4px); }
             }
             .slt-update-modal {
-                padding: 20px;
+                padding: 2px;
                 color: var(--spice-text);
                 animation: slt-modal-fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
             }
@@ -7311,7 +7515,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         </div>
     `;
     if (Spicetify.PopupModal) {
-      Spicetify.PopupModal.display({
+      displayModal({
         title: "Spicy Lyric Translator",
         content,
         isLarge: true
@@ -7321,7 +7525,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         const updateBtn = document.getElementById("slt-update-now");
         if (laterBtn) {
           laterBtn.addEventListener("click", () => {
-            Spicetify.PopupModal.hide();
+            hideModal();
           });
         }
         if (updateBtn) {
@@ -7421,7 +7625,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         output.push(`<div style="border-left: 3px solid #1db954; padding-left: 12px; margin: 6px 0; color: var(--spice-subtext); font-style: italic;">${processInlineMarkdown(bq[1])}</div>`);
         continue;
       }
-      const ul = line.match(/^\s*[-*+]\s+(.*)/);
+      const ul = line.match(/^([ \t]*)[-*+]\s+(.*)/);
       if (ul) {
         if (inOl) {
           output.push("</ol>");
@@ -7431,20 +7635,25 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           output.push('<ul style="margin: 4px 0; padding-left: 0; list-style: none;">');
           inUl = true;
         }
-        output.push(`<li style="display: flex; gap: 8px; margin: 4px 0;"><span style="color: #1db954;">\u2022</span><span>${processInlineMarkdown(ul[1])}</span></li>`);
+        const indent = ul[1].replace(/\t/g, "  ").length;
+        const depth = Math.min(Math.floor(indent / 2), 5);
+        const markers = ["\u2022", "\u25E6", "\u25AA", "\u2023", "\xB7", "\u2022"];
+        output.push(`<li style="display: flex; gap: 8px; margin: 3px 0; margin-left: ${depth * 18}px;"><span style="color: var(--slt-cl-accent, #1db954); flex-shrink: 0;">${markers[depth] || "\u2022"}</span><span>${processInlineMarkdown(ul[2])}</span></li>`);
         continue;
       }
-      const ol = line.match(/^\s*(\d+)\.\s+(.*)/);
+      const ol = line.match(/^([ \t]*)(\d+)[.)]\s+(.*)/);
       if (ol) {
         if (inUl) {
           output.push("</ul>");
           inUl = false;
         }
         if (!inOl) {
-          output.push('<ol style="margin: 4px 0; padding-left: 20px; color: var(--spice-subtext);">');
+          output.push('<ol style="margin: 4px 0; padding-left: 0; list-style: none;">');
           inOl = true;
         }
-        output.push(`<li style="margin: 4px 0;">${processInlineMarkdown(ol[2])}</li>`);
+        const indent = ol[1].replace(/\t/g, "  ").length;
+        const depth = Math.min(Math.floor(indent / 2), 5);
+        output.push(`<li style="display: flex; gap: 8px; margin: 3px 0; margin-left: ${depth * 18}px;"><span style="color: var(--slt-cl-accent, #1db954); flex-shrink: 0; min-width: 16px; font-weight: 600;">${ol[2]}.</span><span>${processInlineMarkdown(ol[3])}</span></li>`);
         continue;
       }
       closeLists();
@@ -7584,7 +7793,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 100% { transform: translateY(-20px) rotate(180deg); opacity: 0; }
             }
             .slt-changelog-modal {
-                padding: 20px;
+                padding: 2px;
                 color: var(--spice-text);
                 animation: slt-cl-fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
             }
@@ -7779,7 +7988,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         </div>
     `;
     if (Spicetify.PopupModal) {
-      Spicetify.PopupModal.display({
+      displayModal({
         title: "Spicy Lyric Translator",
         content,
         isLarge: true
@@ -7788,7 +7997,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         const dismissBtn = document.getElementById("slt-changelog-dismiss");
         if (dismissBtn) {
           dismissBtn.addEventListener("click", () => {
-            Spicetify.PopupModal.hide();
+            hideModal();
           });
         }
       }, 100);
@@ -7822,15 +8031,25 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   }
   async function showPostUpdateChangelog() {
     const currentVersion = CURRENT_VERSION;
+    const currentHash = getContentHash();
     let targetVersion = null;
     let changelog = null;
-    const hotfixDetected = storage.get("hotfix-detected");
-    if (hotfixDetected) {
-      storage.remove("hotfix-detected");
+    const persistKnown = () => {
+      storage.set("last-known-version", currentVersion);
+      if (currentHash)
+        storage.set("last-known-hash", currentHash);
+    };
+    const showHotfix = async () => {
+      persistKnown();
       await new Promise((r) => setTimeout(r, 2e3));
       const hashShort = getContentHashShort();
       const hotfixChangelog = await fetchChangelogForVersion(currentVersion);
       showChangelogModal(currentVersion, hotfixChangelog || "", { isHotfix: true, hashShort });
+    };
+    const hotfixDetected = storage.get("hotfix-detected");
+    if (hotfixDetected) {
+      storage.remove("hotfix-detected");
+      await showHotfix();
       return;
     }
     const pendingVersion = storage.get("pending-update-version");
@@ -7842,7 +8061,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         const elapsed = Date.now() - parseInt(pendingTimestamp, 10);
         if (elapsed > 60 * 60 * 1e3) {
           storage.remove("pending-update-changelog");
-          storage.set("last-known-version", currentVersion);
+          persistKnown();
           return;
         }
       }
@@ -7851,18 +8070,23 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       targetVersion = pendingVersion;
     } else {
       const lastKnownVersion = storage.get("last-known-version");
-      if (lastKnownVersion && lastKnownVersion !== currentVersion) {
+      const lastKnownHash = storage.get("last-known-hash");
+      if (!lastKnownVersion) {
+        persistKnown();
+        return;
+      }
+      if (lastKnownVersion !== currentVersion) {
         const lastParsed = parseVersion(lastKnownVersion);
         const currentParsed = parseVersion(currentVersion);
         if (lastParsed && currentParsed && compareVersions(currentParsed, lastParsed) > 0) {
           targetVersion = currentVersion;
         }
-      } else if (!lastKnownVersion) {
-        storage.set("last-known-version", currentVersion);
+      } else if (currentHash && lastKnownHash && lastKnownHash !== currentHash) {
+        await showHotfix();
         return;
       }
     }
-    storage.set("last-known-version", currentVersion);
+    persistKnown();
     if (!targetVersion)
       return;
     if (!changelog) {
@@ -7906,6 +8130,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   var viewControlsObserver = null;
   var lyricsObserver = null;
   var translateDebounceTimer = null;
+  var rerenderDebounceTimer = null;
   var viewModeIntervalId = null;
   var romanizationToggleListener = null;
   var romanizationToggleButton = null;
@@ -9167,6 +9392,19 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       fillGapsInFlight = false;
     }
   }
+  function forceRetranslate() {
+    lastSkippedTranslation = null;
+    lastSkipNotifyKey = null;
+    lastTranslatedRomanizationState = null;
+    state.lastTranslatedSongUri = null;
+    state.translatedLyrics.clear();
+    state._translationsByIndex = void 0;
+    state._qualityByIndex = void 0;
+    removeTranslations();
+    if (state.isEnabled) {
+      translateCurrentLyrics();
+    }
+  }
   function reapplyTranslations() {
     if (state.translatedLyrics.size === 0)
       return;
@@ -9254,7 +9492,22 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         const hasNewContent = mutations.some(
           (m) => m.type === "childList" && m.addedNodes.length > 0 && Array.from(m.addedNodes).some(hasLyricLineNode)
         );
-        if (hasNewContent && state.autoTranslate && !state.isTranslating) {
+        if (!hasNewContent || state.isTranslating)
+          return;
+        const alreadyTranslated = state.translatedLyrics.size > 0 && state.lastTranslatedSongUri === getCurrentTrackUri();
+        if (alreadyTranslated) {
+          if (rerenderDebounceTimer)
+            clearTimeout(rerenderDebounceTimer);
+          rerenderDebounceTimer = setTimeout(() => {
+            rerenderDebounceTimer = null;
+            if (state.isTranslating)
+              return;
+            const lines = getLyricsLines();
+            if (lines.length > 0)
+              applyTranslations(lines);
+            void fillVisibleGaps();
+          }, 200);
+        } else if (state.autoTranslate) {
           if (translateDebounceTimer)
             clearTimeout(translateDebounceTimer);
           translateDebounceTimer = setTimeout(() => {
@@ -9310,6 +9563,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     if (translateDebounceTimer) {
       clearTimeout(translateDebounceTimer);
       translateDebounceTimer = null;
+    }
+    if (rerenderDebounceTimer) {
+      clearTimeout(rerenderDebounceTimer);
+      rerenderDebounceTimer = null;
     }
     state.isTranslating = false;
     if (lyricsObserver) {
@@ -9472,7 +9729,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       type: "select",
       storageKey: "target-language",
       defaultValue: "en",
-      options: SUPPORTED_LANGUAGES.map((language) => ({ value: language.code, text: language.name }))
+      options: SUPPORTED_LANGUAGES.map((language) => ({ value: language.code, text: language.name })),
+      effects: ["retranslate"]
     },
     {
       id: "overlay-mode",
@@ -9840,7 +10098,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     const spicyLyricsCacheButton = container.querySelector("#slt-clear-spicy-lyrics-cache");
     const translationCacheButton = container.querySelector("#slt-clear-translation-cache");
     viewSpicyLyricsCacheButton?.addEventListener("click", () => {
-      Spicetify.PopupModal?.hide();
+      hideModal();
       setTimeout(() => openSpicyLyricsCacheViewer(), 150);
     });
     spicyLyricsCacheButton?.addEventListener("click", async () => {
@@ -9948,6 +10206,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     }
     if (effects.includes("reapplyTranslations")) {
       reapplyTranslations();
+    }
+    if (effects.includes("retranslate")) {
+      forceRetranslate();
     }
   }
   function updateSettingFieldVisibility(root, visibleDisplay) {
@@ -10244,31 +10505,70 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     container.innerHTML = `
         <style>
             .slt-settings-container {
-                padding: 18px 22px 22px;
+                --slt-radius: 16px;
+                --slt-radius-sm: 11px;
+                --slt-hairline: rgba(255, 255, 255, 0.07);
+                --slt-hairline-strong: rgba(255, 255, 255, 0.14);
+                --slt-surface: rgba(255, 255, 255, 0.035);
+                --slt-surface-hover: rgba(255, 255, 255, 0.06);
+                --slt-text: hsla(0, 0%, 100%, 0.92);
+                --slt-text-2: hsla(0, 0%, 100%, 0.58);
+                --slt-text-3: hsla(0, 0%, 100%, 0.4);
+                --slt-accent: var(--spice-button-active, #1db954);
+                --slt-ease: cubic-bezier(0.32, 0.72, 0, 1);
+                --slt-gloss:
+                    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+                    inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+                padding: 2px 2px 4px;
                 display: flex;
                 flex-direction: column;
-                gap: 10px;
-                width: min(680px, 90vw);
+                gap: 2px;
+                width: 100%;
                 max-width: 100%;
-                max-height: 72vh;
                 box-sizing: border-box;
-                overflow-x: hidden;
-                overflow-y: auto;
+                color: var(--slt-text);
+                -webkit-font-smoothing: antialiased;
             }
+            @keyframes slt-modal-rise {
+                from { opacity: 0; transform: translateY(8px) scale(0.992); }
+                to { opacity: 1; transform: none; }
+            }
+            .slt-settings-container::-webkit-scrollbar { width: 9px; }
+            .slt-settings-container::-webkit-scrollbar-track { background: transparent; }
+            .slt-settings-container::-webkit-scrollbar-thumb {
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 999px;
+                border: 2px solid transparent;
+                background-clip: padding-box;
+            }
+            .slt-settings-container::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.22); background-clip: padding-box; }
             .slt-modal-field {
                 grid-template-columns: minmax(180px, 1fr) minmax(220px, 300px);
                 align-items: center;
                 gap: 18px;
-                padding: 9px 0;
+                padding: 13px 14px;
+                border-radius: var(--slt-radius-sm);
+                position: relative;
+                transition: background 0.2s var(--slt-ease);
             }
+            .slt-modal-field:hover { background: var(--slt-surface); }
+            .slt-modal-field::after {
+                content: '';
+                position: absolute;
+                left: 14px; right: 14px; bottom: 0;
+                height: 1px;
+                background: var(--slt-hairline);
+            }
+            .slt-modal-field:hover::after { opacity: 0; }
             .slt-modal-field-copy {
                 min-width: 0;
             }
             .slt-modal-field-copy label {
                 display: block;
                 font-size: 14px;
-                font-weight: 500;
-                color: var(--spice-text);
+                font-weight: 600;
+                letter-spacing: 0.005em;
+                color: var(--slt-text);
                 line-height: 1.35;
             }
             .slt-modal-field-control {
@@ -10281,24 +10581,50 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             .slt-modal-field input[type="password"] {
                 width: 100%;
                 min-height: 40px;
-                padding: 8px 12px;
-                border-radius: 4px;
-                border: 1px solid var(--spice-button-disabled);
-                background: var(--spice-card);
-                color: var(--spice-text);
+                padding: 9px 13px;
+                border-radius: var(--slt-radius-sm);
+                border: 1px solid var(--slt-hairline-strong);
+                background-color: var(--slt-surface);
+                color: var(--slt-text);
                 font-size: 14px;
+                font-weight: 500;
                 box-sizing: border-box;
+                transition: border-color 0.2s var(--slt-ease), background-color 0.2s var(--slt-ease), box-shadow 0.2s var(--slt-ease);
+                cursor: pointer;
+            }
+            .slt-modal-field select {
+                appearance: none;
+                -webkit-appearance: none;
+                padding-right: 38px;
+                background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.55)' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+                background-repeat: no-repeat;
+                background-position: right 13px center;
+                background-size: 14px 14px;
+            }
+            .slt-modal-field select option,
+            .slt-modal-field select optgroup {
+                background-color: #1c1c20;
+                color: var(--slt-text);
+                font-weight: 500;
+            }
+            .slt-modal-field select:hover,
+            .slt-modal-field input[type="text"]:hover,
+            .slt-modal-field input[type="password"]:hover {
+                background-color: var(--slt-surface-hover);
+                border-color: rgba(255, 255, 255, 0.22);
             }
             .slt-modal-field select:focus,
             .slt-modal-field input[type="text"]:focus,
             .slt-modal-field input[type="password"]:focus {
                 outline: none;
-                border-color: var(--spice-button);
+                border-color: rgba(255, 255, 255, 0.4);
+                box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
             }
             .slt-toggle {
                 position: relative;
-                width: 40px;
-                height: 20px;
+                width: 46px;
+                height: 27px;
+                flex-shrink: 0;
             }
             .slt-toggle input {
                 opacity: 0;
@@ -10312,70 +10638,85 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 left: 0;
                 right: 0;
                 bottom: 0;
-                background-color: var(--spice-button-disabled);
-                transition: .3s;
-                border-radius: 20px;
+                background-color: rgba(255, 255, 255, 0.1);
+                box-shadow: var(--slt-gloss);
+                transition: background-color 0.28s var(--slt-ease);
+                border-radius: 999px;
             }
             .slt-toggle-slider:before {
                 position: absolute;
                 content: "";
-                height: 16px;
-                width: 16px;
-                left: 2px;
-                bottom: 2px;
-                background-color: white;
-                transition: .3s;
+                height: 21px;
+                width: 21px;
+                left: 3px;
+                bottom: 3px;
+                background-color: #fff;
+                box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+                transition: transform 0.28s var(--slt-ease);
                 border-radius: 50%;
             }
             .slt-toggle input:checked + .slt-toggle-slider {
-                background-color: var(--spice-button);
+                background-color: var(--slt-accent);
             }
             .slt-toggle input:checked + .slt-toggle-slider:before {
-                transform: translateX(20px);
+                transform: translateX(19px);
             }
             .slt-button {
-                padding: 9px 18px;
-                border-radius: 500px;
-                border: none;
-                background: var(--spice-button);
-                color: var(--spice-text);
+                padding: 10px 20px;
+                border-radius: 999px;
+                border: 1px solid transparent;
+                background: rgba(255, 255, 255, 0.92);
+                color: #000;
                 font-size: 13px;
                 font-weight: 700;
+                letter-spacing: 0.01em;
                 cursor: pointer;
-                transition: transform 0.1s, background 0.2s;
+                transition: transform 0.18s var(--slt-ease), background 0.2s var(--slt-ease), box-shadow 0.2s var(--slt-ease), border-color 0.2s var(--slt-ease);
                 white-space: nowrap;
+                box-shadow: 0 2px 10px -2px rgba(0, 0, 0, 0.4);
             }
             .slt-button:hover {
-                transform: scale(1.02);
-                background: var(--spice-button-active);
+                transform: translateY(-1px);
+                background: #fff;
+                box-shadow: 0 6px 18px -4px rgba(0, 0, 0, 0.5);
             }
             .slt-button:active {
-                transform: scale(0.98);
+                transform: translateY(0) scale(0.985);
             }
             .slt-button.secondary {
-                background: var(--spice-card);
-                border: 1px solid var(--spice-button-disabled);
+                background: var(--slt-surface);
+                border: 1px solid var(--slt-hairline-strong);
+                color: var(--slt-text);
+                box-shadow: var(--slt-gloss);
+            }
+            .slt-button.secondary:hover {
+                background: var(--slt-surface-hover);
+                border-color: rgba(255, 255, 255, 0.28);
+                box-shadow: var(--slt-gloss), 0 6px 18px -6px rgba(0, 0, 0, 0.5);
             }
             .slt-button.danger {
-                background: rgba(255, 80, 80, 0.18);
-                border: 1px solid rgba(255, 80, 80, 0.35);
-                color: #ff7373;
+                background: rgba(255, 90, 90, 0.14);
+                border: 1px solid rgba(255, 90, 90, 0.32);
+                color: #ff8a8a;
+                box-shadow: none;
             }
             .slt-button.danger:hover {
-                background: rgba(255, 80, 80, 0.3);
+                background: rgba(255, 90, 90, 0.26);
+                border-color: rgba(255, 90, 90, 0.5);
                 color: #fff;
             }
             .slt-button:disabled {
                 cursor: default;
-                opacity: 0.65;
+                opacity: 0.5;
                 transform: none;
+                box-shadow: none;
             }
             .slt-description {
                 display: block;
-                font-size: 12px;
-                color: var(--spice-subtext);
+                font-size: 12.5px;
+                color: var(--slt-text-3);
                 margin-top: 3px;
-                line-height: 1.35;
+                line-height: 1.4;
             }
             .slt-modal-actions,
             .slt-modal-footer {
@@ -10384,12 +10725,14 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 justify-content: space-between;
                 gap: 12px;
                 flex-wrap: wrap;
-                padding-top: 12px;
+                padding-top: 16px;
             }
             .slt-modal-actions {
-                border-top: 1px solid rgba(255, 255, 255, 0.08);
-                margin-top: 4px;
+                border-top: 1px solid var(--slt-hairline);
+                margin-top: 10px;
+                padding: 16px 6px 4px;
             }
+            .slt-modal-footer { padding: 4px 6px 0; }
             .slt-modal-cache-actions {
                 display: flex;
                 gap: 8px;
@@ -10467,13 +10810,13 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       const viewChangelogPopupButton = container.querySelector("#slt-view-changelog-popup");
       const checkUpdatesButton = container.querySelector("#slt-check-updates");
       viewCacheButton?.addEventListener("click", () => {
-        Spicetify.PopupModal?.hide();
+        hideModal();
         setTimeout(() => openCacheViewer(), 150);
       });
       viewChangelogPopupButton?.addEventListener("click", async () => {
         viewChangelogPopupButton.textContent = "Loading...";
         viewChangelogPopupButton.disabled = true;
-        Spicetify.PopupModal?.hide();
+        hideModal();
         try {
           await showCurrentChangelog();
         } catch (e) {
@@ -10491,7 +10834,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         try {
           const updateInfo = await getUpdateInfo();
           if (updateInfo?.hasUpdate) {
-            Spicetify.PopupModal?.hide();
+            hideModal();
             setTimeout(() => checkForUpdates(true), 150);
           } else {
             try {
@@ -10727,7 +11070,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 display: flex;
                 flex-direction: column;
                 gap: 12px;
-                padding: 18px 22px 22px;
+                padding: 2px 2px 4px;
                 box-sizing: border-box;
                 overflow-x: hidden;
                 overflow-y: hidden;
@@ -10742,9 +11085,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
                 gap: 8px;
                 padding: 12px 14px;
-                background: var(--spice-card);
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                background: rgba(255, 255, 255, 0.045);
+                border-radius: var(--slt-radius-sm);
+                border: 1px solid var(--slt-hairline-strong);
             }
             .slt-lyrics-info-cell {
                 display: flex;
@@ -10797,7 +11140,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 padding: 8px 14px;
                 border-radius: 500px;
                 border: none;
-                background: var(--spice-main-elevated);
+                background: var(--slt-surface); border: 1px solid var(--slt-hairline-strong); box-shadow: var(--slt-gloss);
                 color: var(--spice-text);
                 font-size: 13px;
                 font-weight: 700;
@@ -10812,11 +11155,11 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 flex-direction: column;
                 gap: 1px;
                 background: rgba(255, 255, 255, 0.04);
-                border-radius: 8px;
+                border-radius: var(--slt-radius-sm);
                 overflow-y: auto;
                 overflow-x: hidden;
                 max-height: min(54vh, 560px);
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                border: 1px solid var(--slt-hairline-strong);
             }
             #slt-lyrics-rows {
                 display: flex;
@@ -10830,7 +11173,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             }
             .slt-lyrics-col {
                 padding: 10px 12px;
-                background: var(--spice-card);
+                background: rgba(255, 255, 255, 0.045);
                 color: var(--spice-text);
                 font-size: 13px;
                 line-height: 1.4;
@@ -10889,7 +11232,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     if (backToCacheButton)
       backToCacheButton.textContent = backToCacheLabel;
     if (Spicetify.PopupModal) {
-      Spicetify.PopupModal.display({
+      displayModal({
         title: "Cached Lyrics Viewer",
         content,
         isLarge: true
@@ -10897,7 +11240,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     }
     const backToCacheBtn = content.querySelector("#slt-lyrics-back-to-cache");
     backToCacheBtn?.addEventListener("click", () => {
-      Spicetify.PopupModal?.hide();
+      hideModal();
       setTimeout(() => openCacheViewer(), 120);
     });
     const copyBtn = content.querySelector("#slt-lyrics-copy-all");
@@ -10977,11 +11320,11 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     container.innerHTML = `
         <style>
             .slt-cache-viewer {
-                padding: 18px 22px 22px;
+                padding: 2px 2px 4px;
                 display: flex;
                 flex-direction: column;
                 gap: 12px;
-                width: min(680px, 90vw);
+                width: 100%;
                 max-width: 100%;
                 max-height: 72vh;
                 box-sizing: border-box;
@@ -10992,9 +11335,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 grid-template-columns: repeat(2, 1fr);
                 gap: 12px;
                 padding: 14px;
-                background: var(--spice-card);
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                background: rgba(255, 255, 255, 0.045);
+                border-radius: var(--slt-radius-sm);
+                border: 1px solid var(--slt-hairline-strong);
             }
             .slt-stat {
                 display: flex;
@@ -11027,9 +11370,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 grid-template-columns: minmax(0, 1fr) auto;
                 align-items: center;
                 padding: 12px 14px;
-                background: var(--spice-card);
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                background: rgba(255, 255, 255, 0.045);
+                border-radius: var(--slt-radius-sm);
+                border: 1px solid var(--slt-hairline-strong);
                 gap: 12px;
                 min-width: 0;
             }
@@ -11100,10 +11443,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             .slt-cache-delete {
                 min-height: 36px;
                 padding: 8px 14px;
-                border-radius: 4px;
+                border-radius: 999px;
                 border: none;
-                background: rgba(255, 80, 80, 0.2);
-                color: #ff5050;
+                background: rgba(255, 90, 90, 0.14); border: 1px solid rgba(255, 90, 90, 0.32);
+                color: #ff8a8a;
                 font-size: 13px;
                 font-weight: 700;
                 cursor: pointer;
@@ -11112,7 +11455,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 white-space: nowrap;
             }
             .slt-cache-delete:hover {
-                background: rgba(255, 80, 80, 0.4);
+                background: rgba(255, 90, 90, 0.26);
             }
             .slt-cache-item-actions {
                 display: flex;
@@ -11123,14 +11466,14 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             .slt-cache-action {
                 min-height: 36px;
                 padding: 8px 14px;
-                border-radius: 4px;
+                border-radius: 999px;
                 border: none;
                 font-size: 13px;
                 font-weight: 700;
                 cursor: pointer;
                 transition: opacity 0.2s, background 0.2s;
                 color: var(--spice-text);
-                background: var(--spice-main-elevated);
+                background: var(--slt-surface); border: 1px solid var(--slt-hairline-strong); box-shadow: var(--slt-gloss);
                 white-space: nowrap;
             }
             .slt-cache-action:hover {
@@ -11141,8 +11484,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 padding: 9px 18px;
                 border-radius: 500px;
                 border: none;
-                background: rgba(255, 80, 80, 0.2);
-                color: #ff5050;
+                background: rgba(255, 90, 90, 0.14); border: 1px solid rgba(255, 90, 90, 0.32);
+                color: #ff8a8a;
                 font-size: 13px;
                 font-weight: 700;
                 cursor: pointer;
@@ -11151,15 +11494,15 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 text-align: center;
             }
             .slt-cache-delete-all:hover {
-                background: rgba(255, 80, 80, 0.4);
+                background: rgba(255, 90, 90, 0.26);
             }
             .slt-empty-cache {
                 text-align: center;
                 padding: 24px;
                 color: var(--spice-subtext);
                 font-size: 14px;
-                background: var(--spice-card);
-                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.045);
+                border-radius: var(--slt-radius-sm);
             }
             .slt-cache-actions {
                 display: flex;
@@ -11175,7 +11518,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 padding: 8px 14px;
                 border-radius: 500px;
                 border: none;
-                background: var(--spice-main-elevated);
+                background: var(--slt-surface); border: 1px solid var(--slt-hairline-strong); box-shadow: var(--slt-gloss);
                 color: var(--spice-text);
                 font-size: 13px;
                 font-weight: 700;
@@ -11271,7 +11614,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     setTimeout(() => {
       const backToSettingsBtn = container.querySelector("#slt-cache-back-to-settings");
       backToSettingsBtn?.addEventListener("click", () => {
-        Spicetify.PopupModal?.hide();
+        hideModal();
         setTimeout(() => openSettingsModal(), 120);
       });
       container.querySelectorAll(".slt-cache-play").forEach((btn) => {
@@ -11308,7 +11651,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           const previousText = button.textContent;
           button.textContent = "Loading...";
           try {
-            Spicetify.PopupModal?.hide();
+            hideModal();
             await new Promise((resolve) => setTimeout(resolve, 120));
             await openCachedLyricsViewer(uri, lang, sourceLang);
           } catch (error2) {
@@ -11375,7 +11718,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   }
   function openCacheViewer() {
     if (Spicetify.PopupModal) {
-      Spicetify.PopupModal.display({
+      displayModal({
         title: "Translation Cache",
         content: createCacheViewerUI(),
         isLarge: true
@@ -11475,9 +11818,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 grid-template-columns: repeat(2, 1fr);
                 gap: 12px;
                 padding: 14px;
-                background: var(--spice-card);
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                background: rgba(255, 255, 255, 0.045);
+                border-radius: var(--slt-radius-sm);
+                border: 1px solid var(--slt-hairline-strong);
             }
             .slt-stat {
                 display: flex;
@@ -11510,9 +11853,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 grid-template-columns: minmax(0, 1fr) auto;
                 align-items: center;
                 padding: 12px 14px;
-                background: var(--spice-card);
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                background: rgba(255, 255, 255, 0.045);
+                border-radius: var(--slt-radius-sm);
+                border: 1px solid var(--slt-hairline-strong);
                 gap: 12px;
                 min-width: 0;
             }
@@ -11575,10 +11918,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             .slt-cache-delete {
                 min-height: 36px;
                 padding: 8px 14px;
-                border-radius: 4px;
+                border-radius: 999px;
                 border: none;
-                background: rgba(255, 80, 80, 0.2);
-                color: #ff5050;
+                background: rgba(255, 90, 90, 0.14); border: 1px solid rgba(255, 90, 90, 0.32);
+                color: #ff8a8a;
                 font-size: 13px;
                 font-weight: 700;
                 cursor: pointer;
@@ -11587,7 +11930,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 white-space: nowrap;
             }
             .slt-cache-delete:hover {
-                background: rgba(255, 80, 80, 0.4);
+                background: rgba(255, 90, 90, 0.26);
             }
             .slt-cache-item-actions {
                 display: flex;
@@ -11598,14 +11941,14 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             .slt-cache-action {
                 min-height: 36px;
                 padding: 8px 14px;
-                border-radius: 4px;
+                border-radius: 999px;
                 border: none;
                 font-size: 13px;
                 font-weight: 700;
                 cursor: pointer;
                 transition: opacity 0.2s, background 0.2s;
                 color: var(--spice-text);
-                background: var(--spice-main-elevated);
+                background: var(--slt-surface); border: 1px solid var(--slt-hairline-strong); box-shadow: var(--slt-gloss);
                 white-space: nowrap;
             }
             .slt-cache-action:hover {
@@ -11616,8 +11959,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 padding: 9px 18px;
                 border-radius: 500px;
                 border: none;
-                background: rgba(255, 80, 80, 0.2);
-                color: #ff5050;
+                background: rgba(255, 90, 90, 0.14); border: 1px solid rgba(255, 90, 90, 0.32);
+                color: #ff8a8a;
                 font-size: 13px;
                 font-weight: 700;
                 cursor: pointer;
@@ -11626,15 +11969,15 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 text-align: center;
             }
             .slt-cache-delete-all:hover {
-                background: rgba(255, 80, 80, 0.4);
+                background: rgba(255, 90, 90, 0.26);
             }
             .slt-empty-cache {
                 text-align: center;
                 padding: 24px;
                 color: var(--spice-subtext);
                 font-size: 14px;
-                background: var(--spice-card);
-                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.045);
+                border-radius: var(--slt-radius-sm);
             }
             .slt-cache-actions {
                 display: flex;
@@ -11650,7 +11993,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 padding: 8px 14px;
                 border-radius: 500px;
                 border: none;
-                background: var(--spice-main-elevated);
+                background: var(--slt-surface); border: 1px solid var(--slt-hairline-strong); box-shadow: var(--slt-gloss);
                 color: var(--spice-text);
                 font-size: 13px;
                 font-weight: 700;
@@ -11741,7 +12084,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       setTimeout(() => {
         const backToSettingsBtn = container.querySelector("#slt-sl-cache-back-to-settings");
         backToSettingsBtn?.addEventListener("click", () => {
-          Spicetify.PopupModal?.hide();
+          hideModal();
           setTimeout(() => openSettingsModal(), 120);
         });
         container.querySelectorAll(".slt-cache-play").forEach((btn) => {
@@ -11774,7 +12117,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             const idx = idxAttr ? parseInt(idxAttr, 10) : -1;
             if (idx < 0 || idx >= cacheItems.length)
               return;
-            Spicetify.PopupModal?.hide();
+            hideModal();
             setTimeout(() => openSpicyLyricsEntryInspector(cacheItems[idx]), 120);
           });
         });
@@ -11867,7 +12210,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 display: flex;
                 flex-direction: column;
                 gap: 12px;
-                padding: 18px 22px 22px;
+                padding: 2px 2px 4px;
                 box-sizing: border-box;
                 overflow-x: hidden;
                 overflow-y: hidden;
@@ -11877,9 +12220,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
                 gap: 8px;
                 padding: 12px 14px;
-                background: var(--spice-card);
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                background: rgba(255, 255, 255, 0.045);
+                border-radius: var(--slt-radius-sm);
+                border: 1px solid var(--slt-hairline-strong);
             }
             .slt-lyrics-info-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
             .slt-lyrics-info-label {
@@ -11891,7 +12234,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             .slt-lyrics-toolbar { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
             .slt-lyrics-back {
                 min-height: 36px; padding: 8px 14px; border-radius: 500px; border: none;
-                background: var(--spice-main-elevated); color: var(--spice-text);
+                background: var(--slt-surface); border: 1px solid var(--slt-hairline-strong); box-shadow: var(--slt-gloss); color: var(--spice-text);
                 font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap;
             }
             .slt-lyrics-back:hover { opacity: 0.85; }
@@ -11907,8 +12250,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
                 max-height: 48vh;
                 overflow: auto;
                 background: rgba(0, 0, 0, 0.35);
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: var(--slt-radius-sm);
+                border: 1px solid var(--slt-hairline-strong);
                 padding: 12px 14px;
                 font-family: 'JetBrains Mono', 'Consolas', monospace;
                 font-size: 12px;
@@ -11920,9 +12263,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
             .slt-lyrics-sample {
                 font-size: 13px;
                 color: var(--spice-text);
-                background: var(--spice-card);
-                border: 1px solid rgba(255, 255, 255, 0.06);
-                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.045);
+                border: 1px solid var(--slt-hairline-strong);
+                border-radius: var(--slt-radius-sm);
                 padding: 10px 12px;
                 line-height: 1.4;
             }
@@ -11950,7 +12293,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         <div class="slt-json-box" id="slt-sl-entry-json">${escapeHtml2(prettyJson || "(empty response)")}</div>
     `;
     if (Spicetify.PopupModal) {
-      Spicetify.PopupModal.display({
+      displayModal({
         title: "Spicy Lyrics Entry",
         content,
         isLarge: true
@@ -11958,7 +12301,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     }
     const backBtn = content.querySelector("#slt-sl-entry-back");
     backBtn?.addEventListener("click", () => {
-      Spicetify.PopupModal?.hide();
+      hideModal();
       setTimeout(() => openSpicyLyricsCacheViewer(), 120);
     });
     const copyBtn = content.querySelector("#slt-sl-entry-copy");
@@ -11987,7 +12330,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   }
   async function openSpicyLyricsCacheViewer() {
     if (Spicetify.PopupModal) {
-      Spicetify.PopupModal.display({
+      displayModal({
         title: "Spicy Lyrics Cache",
         content: (() => {
           const div = document.createElement("div");
@@ -11999,7 +12342,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
         isLarge: true
       });
       const ui = await createSpicyLyricsCacheViewerUI();
-      Spicetify.PopupModal.display({
+      displayModal({
         title: "Spicy Lyrics Cache",
         content: ui,
         isLarge: true
@@ -12008,7 +12351,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   }
   function openSettingsModal() {
     if (Spicetify.PopupModal) {
-      Spicetify.PopupModal.display({
+      displayModal({
         title: "Spicy Lyric Translator Settings",
         content: createSettingsUI(),
         isLarge: true
@@ -12120,26 +12463,39 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       return "slt-ci-bad";
     return "slt-ci-horrible";
   }
+  function formatUserCount(count) {
+    if (!count || count < 0)
+      return "0";
+    if (count < 1e3)
+      return String(count);
+    if (count < 1e6) {
+      const k = count / 1e3;
+      return `${k >= 100 ? Math.round(k) : Math.round(k * 10) / 10}K`;
+    }
+    return `${Math.round(count / 1e6 * 10) / 10}M`;
+  }
+  function setLabel(button, text) {
+    button.setAttribute("aria-label", text);
+    button.setAttribute("title", text);
+  }
   function createIndicatorElement() {
     const container = document.createElement("div");
     container.className = "SLT_ConnectionIndicator";
     container.innerHTML = `
         <div class="slt-ci-button" aria-label="Connection Status">
-            <div class="slt-ci-dot"></div>
-            <div class="slt-ci-expanded">
-                <div class="slt-ci-stats-row">
-                    <span class="slt-ci-ping" aria-label="Round-trip latency to SLT server">--ms</span>
-                    <span class="slt-ci-sep"></span>
-                    <span class="slt-ci-users-count slt-ci-total" aria-label="Total users with extension installed">
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-                            <circle cx="9" cy="7" r="4"/>
-                            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-                            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                        </svg>
-                        <span class="slt-ci-total-count">0</span>
-                    </span>
-                </div>
+            <span class="slt-ci-dot"></span>
+            <div class="slt-ci-meta">
+                <span class="slt-ci-ping" aria-label="Round-trip latency to SLT server">--ms</span>
+                <span class="slt-ci-sep"></span>
+                <span class="slt-ci-users-count slt-ci-total" aria-label="Total users with extension installed">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                        <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                    </svg>
+                    <span class="slt-ci-total-count">0</span>
+                </span>
             </div>
         </div>
     `;
@@ -12156,19 +12512,22 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       return;
     dot.classList.remove("slt-ci-connecting", "slt-ci-connected", "slt-ci-error", "slt-ci-great", "slt-ci-ok", "slt-ci-bad", "slt-ci-horrible");
     switch (indicatorState.state) {
-      case "connected":
+      case "connected": {
         dot.classList.add("slt-ci-connected");
+        const latencyClass = indicatorState.latencyMs !== null ? getLatencyClass(indicatorState.latencyMs) : "";
         if (indicatorState.latencyMs !== null) {
-          dot.classList.add(getLatencyClass(indicatorState.latencyMs));
+          dot.classList.add(latencyClass);
           if (pingEl) {
             pingEl.textContent = `${indicatorState.latencyMs}ms`;
-            pingEl.className = `slt-ci-ping ${getLatencyClass(indicatorState.latencyMs)}`;
+            pingEl.className = `slt-ci-ping ${latencyClass}`;
           }
         }
         if (totalCountEl)
-          totalCountEl.textContent = `${indicatorState.totalUsers}`;
-        button.setAttribute("aria-label", `Connected \xB7 ${indicatorState.latencyMs}ms \xB7 ${indicatorState.totalUsers} installed`);
+          totalCountEl.textContent = formatUserCount(indicatorState.totalUsers);
+        const ping = indicatorState.latencyMs !== null ? `${indicatorState.latencyMs}ms` : "measuring\u2026";
+        setLabel(button, `Connected \xB7 ${ping} \xB7 ${indicatorState.totalUsers.toLocaleString()} users installed`);
         break;
+      }
       case "connecting":
       case "reconnecting":
         dot.classList.add("slt-ci-connecting");
@@ -12176,7 +12535,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           pingEl.textContent = "--ms";
           pingEl.className = "slt-ci-ping";
         }
-        button.setAttribute("aria-label", "Connecting...");
+        setLabel(button, indicatorState.state === "reconnecting" ? "Reconnecting\u2026" : "Connecting\u2026");
         break;
       case "error":
         dot.classList.add("slt-ci-error");
@@ -12184,7 +12543,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           pingEl.textContent = "ERR";
           pingEl.className = "slt-ci-ping slt-ci-horrible";
         }
-        button.setAttribute("aria-label", "Connection error \u2014 retrying...");
+        setLabel(button, "Connection error \u2014 retrying\u2026");
         break;
       case "disconnected":
       default:
@@ -12192,7 +12551,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           pingEl.textContent = "--ms";
           pingEl.className = "slt-ci-ping";
         }
-        button.setAttribute("aria-label", "Disconnected");
+        setLabel(button, "Disconnected");
         break;
     }
   }

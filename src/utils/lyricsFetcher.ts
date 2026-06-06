@@ -16,7 +16,6 @@ interface SyllableData {
     TransliteratedText?: string;
 }
 
-
 interface VocalGroup {
     Type: 'Vocal' | 'Instrumental';
     OppositeAligned?: boolean;
@@ -401,7 +400,6 @@ async function waitForCapture(trackId: string, timeoutMs: number = 8000, pollMs:
     return getStoredLyricsData(trackId);
 }
 
-
 function getCurrentTrackId(): string | null {
     try {
         const uri = (globalThis as any).Spicetify?.Player?.data?.item?.uri;
@@ -421,7 +419,6 @@ function getTrackIdFromUri(trackUri: string): string | null {
     const parts = trackUri.split(':');
     return parts[parts.length - 1] || null;
 }
-
 
 function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
     const lineData: LyricLineData[] = [];
@@ -445,7 +442,9 @@ function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
             let lineText = '';
             let romanizedText = '';
             let anyRomanized = false;
-            for (const syllable of group.Lead.Syllables) {
+            const syllables = group.Lead.Syllables;
+            for (let i = 0; i < syllables.length; i++) {
+                const syllable = syllables[i];
                 wordTimings.push({
                     text: syllable.Text,
                     startTime: syllable.StartTime,
@@ -507,7 +506,6 @@ function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
     return lineData;
 }
 
-
 function extractStaticLinesData(lyrics: LyricsData): LyricLineData[] {
     if (!lyrics.Lines) return [];
     return lyrics.Lines.map(line => ({
@@ -518,7 +516,6 @@ function extractStaticLinesData(lyrics: LyricsData): LyricLineData[] {
         romanizedText: getRomanizedText(line),
     }));
 }
-
 
 function extractLinesData(lyrics: LyricsData): LyricLineData[] {
     switch (lyrics.Type) {
@@ -539,7 +536,6 @@ function extractLinesData(lyrics: LyricsData): LyricLineData[] {
 let cachedTrackId: string | null = null;
 let cachedLineData: LyricLineData[] | null = null;
 let cachedLanguage: string | null = null;
-
 
 function getLyricsLanguage(lyrics: LyricsData): string | undefined {
     const iso = normalizeLanguageCode(lyrics.LanguageISO2);
@@ -625,7 +621,6 @@ export async function fetchLyricsForTrackUri(trackUri: string): Promise<{ lines:
         return null;
     }
 }
-
 
 export function clearLyricsCache(): void {
     cachedTrackId = null;

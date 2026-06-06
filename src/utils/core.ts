@@ -26,6 +26,7 @@ import { fetchLyricsFromAPI, fetchLyricsForTrackUri, clearLyricsCache, LyricLine
 let viewControlsObserver: MutationObserver | null = null;
 let lyricsObserver: MutationObserver | null = null;
 let translateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let rerenderDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let viewModeIntervalId: ReturnType<typeof setInterval> | null = null;
 let romanizationToggleListener: (() => void) | null = null;
 let romanizationToggleButton: Element | null = null;
@@ -221,19 +222,19 @@ export function isRomanizationActive(): boolean {
 }
 
 export function isSpicyLyricsOpen(): boolean {
-    if (document.querySelector('#SpicyLyricsPage') || 
+    if (document.querySelector('#SpicyLyricsPage') ||
         document.querySelector('.spicy-pip-wrapper #SpicyLyricsPage') ||
         document.querySelector('.Cinema--Container') ||
         document.querySelector('.spicy-lyrics-cinema') ||
         document.body.classList.contains('SpicySidebarLyrics__Active')) {
         return true;
     }
-    
+
     const pipWindow = getPIPWindow();
     if (pipWindow?.document.querySelector('#SpicyLyricsPage')) {
         return true;
     }
-    
+
     return false;
 }
 
@@ -245,13 +246,13 @@ export function getLyricsContent(): HTMLElement | null {
                           pipWindow.document.querySelector('.LyricsContent');
         if (pipContent) return pipContent as HTMLElement;
     }
-    
+
     if (document.body.classList.contains('SpicySidebarLyrics__Active')) {
         const sidebarContent = document.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContainer .LyricsContent') ||
                               document.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContent');
         if (sidebarContent) return sidebarContent as HTMLElement;
     }
-    
+
     return document.querySelector('#SpicyLyricsPage .LyricsContainer .LyricsContent') ||
            document.querySelector('#SpicyLyricsPage .LyricsContent') ||
            document.querySelector('.spicy-pip-wrapper .LyricsContent') ||
@@ -286,7 +287,7 @@ export function updateButtonState(): void {
         document.querySelector('#TranslateToggle'),
         getPIPWindow()?.document.querySelector('#TranslateToggle')
     ];
-    
+
     buttons.forEach(button => {
         if (button) {
             button.innerHTML = state.isEnabled ? Icons.Translate : Icons.TranslateOff;
@@ -304,7 +305,7 @@ export function restoreButtonState(): void {
         document.querySelector('#TranslateToggle'),
         getPIPWindow()?.document.querySelector('#TranslateToggle')
     ];
-    
+
     buttons.forEach(button => {
         if (button) {
             button.classList.remove('loading', 'error');
@@ -341,9 +342,9 @@ function createTranslateButton(): HTMLButtonElement {
     button.id = 'TranslateToggle';
     button.className = 'ViewControl';
     button.innerHTML = state.isEnabled ? Icons.Translate : Icons.TranslateOff;
-    
+
     if (state.isEnabled) button.classList.add('active');
-    
+
     if (typeof Spicetify !== 'undefined' && Spicetify.Tippy) {
         try {
             Spicetify.Tippy(button, {
@@ -354,20 +355,20 @@ function createTranslateButton(): HTMLButtonElement {
             warn('Failed to create tooltip:', e);
         }
     }
-    
+
     button.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
         handleTranslateToggle();
     });
-    
+
     button.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
         openSettingsModal();
         return false;
     });
-    
+
     return button;
 }
 
@@ -382,21 +383,21 @@ export function insertTranslateButton(): void {
 function insertTranslateButtonIntoDocument(doc: Document): void {
     let viewControls = doc.querySelector('#SpicyLyricsPage .ContentBox .ViewControls') ||
                        doc.querySelector('#SpicyLyricsPage .ViewControls');
-    
+
     if (!viewControls && doc.body.classList.contains('SpicySidebarLyrics__Active')) {
         viewControls = doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .ViewControls');
     }
-    
+
     if (!viewControls) {
         viewControls = doc.querySelector('.ViewControls');
     }
-    
+
     if (!viewControls) return;
     if (viewControls.querySelector('#TranslateToggle')) return;
-    
+
     const romanizeButton = viewControls.querySelector('#RomanizationToggle');
     const translateButton = createTranslateButton();
-    
+
     if (romanizeButton) {
         romanizeButton.insertAdjacentElement('afterend', translateButton);
     } else {
@@ -411,12 +412,12 @@ function insertTranslateButtonIntoDocument(doc: Document): void {
 
 export async function handleTranslateToggle(): Promise<void> {
     if (state.isTranslating) return;
-    
+
     state.isEnabled = !state.isEnabled;
     storage.set('translation-enabled', state.isEnabled.toString());
-    
+
     updateButtonState();
-    
+
     if (state.isEnabled) {
         await translateCurrentLyrics();
     } else {
@@ -426,7 +427,7 @@ export async function handleTranslateToggle(): Promise<void> {
 
 export function extractLineText(lineElement: Element): string {
     if (lineElement.classList.contains('musical-line')) return '';
-    
+
     const words = lineElement.querySelectorAll('.word:not(.dot), .syllable, .letterGroup');
     if (words.length > 0) {
         return Array.from(words)
@@ -435,7 +436,7 @@ export function extractLineText(lineElement: Element): string {
             .replace(/\s+/g, ' ')
             .trim();
     }
-    
+
     const letters = lineElement.querySelectorAll('.letter');
     if (letters.length > 0) {
         return Array.from(letters)
@@ -443,7 +444,7 @@ export function extractLineText(lineElement: Element): string {
             .join('')
             .trim();
     }
-    
+
     return lineElement.textContent?.trim() || '';
 }
 
@@ -502,19 +503,19 @@ function getLyricsLines(): NodeListOf<Element> {
     for (const doc of docs) {
         const scrollContainer = doc.querySelectorAll(`#SpicyLyricsPage .SpicyLyricsScrollContainer .line${excludeSelector}`);
         if (scrollContainer.length > 0) return scrollContainer;
-        
+
         const lyricsContent = doc.querySelectorAll(`#SpicyLyricsPage .LyricsContent .line${excludeSelector}`);
         if (lyricsContent.length > 0) return lyricsContent;
-        
+
         if (doc.body.classList.contains('SpicySidebarLyrics__Active')) {
             const sidebar = doc.querySelectorAll(`.Root__right-sidebar #SpicyLyricsPage .line${excludeSelector}`);
             if (sidebar.length > 0) return sidebar;
         }
-        
+
         const generic = doc.querySelectorAll(`.LyricsContent .line${excludeSelector}, .LyricsContainer .line${excludeSelector}`);
         if (generic.length > 0) return generic;
     }
-    
+
     return document.querySelectorAll('.non-existent-selector');
 }
 
@@ -711,11 +712,11 @@ export async function waitForLyricsAndTranslate(retries: number = 10, delay: num
 
 export async function translateCurrentLyrics(): Promise<void> {
     if (state.isTranslating) return;
-    
+
     const currentTrackUri = getCurrentTrackUri();
     const currentRomanization = isRomanizationActive();
     const romanizationChanged = lastTranslatedRomanizationState !== null && currentRomanization !== lastTranslatedRomanizationState;
-    
+
     if (currentTrackUri && currentTrackUri === state.lastTranslatedSongUri && state.translatedLyrics.size > 0 && !romanizationChanged) {
         let hasRealTranslation = false;
         for (const [src, dst] of state.translatedLyrics) {
@@ -735,11 +736,11 @@ export async function translateCurrentLyrics(): Promise<void> {
         state.lastTranslatedSongUri = null;
         state.translatedLyrics.clear();
     }
-    
+
     if (romanizationChanged) {
         removeTranslations();
     }
-    
+
     if (isOffline()) {
         const cacheStats = getCacheStats();
         if (cacheStats.entries === 0) {
@@ -749,14 +750,14 @@ export async function translateCurrentLyrics(): Promise<void> {
             return;
         }
     }
-    
+
     let lines = getLyricsLines();
     if (lines.length === 0) return;
     let virtualizedDom = hasVirtualizedLineIndexes(lines);
-    
+
     state.isTranslating = true;
     let buttonsLoading = false;
-    
+
     try {
         let domLineTexts: string[] = [];
         lines.forEach(line => domLineTexts.push(extractLineText(line)));
@@ -826,7 +827,7 @@ export async function translateCurrentLyrics(): Promise<void> {
                 cachedSourceLanguage = trackCache.lang;
             }
         }
-        
+
         let apiVocalTexts: string[] | null = null;
         let apiVocalLineData: LyricLineData[] | null = null;
         if (apiLineTexts && apiLineData) {
@@ -839,7 +840,7 @@ export async function translateCurrentLyrics(): Promise<void> {
                 }
             }
         }
-        
+
         let useApiLines = Boolean(apiVocalTexts && apiVocalTexts.length > 0);
         if (!useApiLines && romanizationOn && apiVocalTexts && apiVocalTexts.length > 0) {
             for (let retryAttempt = 0; retryAttempt < 2; retryAttempt++) {
@@ -847,16 +848,16 @@ export async function translateCurrentLyrics(): Promise<void> {
                 lines = getLyricsLines();
                 virtualizedDom = hasVirtualizedLineIndexes(lines);
                 if (lines.length === 0) break;
-                
+
                 domLineTexts = [];
                 lines.forEach(line => domLineTexts.push(extractLineText(line)));
-                
+
                 if (apiVocalTexts.length === lines.length || virtualizedDom) {
                     useApiLines = true;
                     break;
                 }
             }
-            
+
         }
 
         let sourceSelection = resolveTranslationSourceLines({
@@ -886,15 +887,15 @@ export async function translateCurrentLyrics(): Promise<void> {
                 lines = getLyricsLines();
                 virtualizedDom = hasVirtualizedLineIndexes(lines);
                 if (lines.length === 0) break;
-                
+
                 domLineTexts = [];
                 lines.forEach(line => domLineTexts.push(extractLineText(line)));
-                
+
                 if (apiVocalTexts.length === lines.length || virtualizedDom) {
                     useApiLines = true;
                     break;
                 }
-                
+
                 const apiTextSet = new Set(apiVocalTexts.map(t => t.trim().toLowerCase()));
                 const domMatchCount = domLineTexts.filter(t => apiTextSet.has(t.trim().toLowerCase())).length;
                 if (domMatchCount > domLineTexts.length * 0.3) {
@@ -914,7 +915,7 @@ export async function translateCurrentLyrics(): Promise<void> {
             apiVocalLineData = sourceSelection.apiVocalLineData;
             useApiLines = sourceSelection.useApiLines;
         }
-        
+
         let matchedTimingData: LyricLineData[] | null = null;
         if (!useApiLines && apiVocalTexts && apiVocalLineData && apiVocalTexts.length > 0) {
             const apiTextMap = new Map<string, LyricLineData>();
@@ -924,7 +925,7 @@ export async function translateCurrentLyrics(): Promise<void> {
                     apiTextMap.set(norm, apiVocalLineData[i]);
                 }
             }
-            
+
             matchedTimingData = [];
             let matchCount = 0;
             for (let i = 0; i < domLineTexts.length; i++) {
@@ -943,19 +944,19 @@ export async function translateCurrentLyrics(): Promise<void> {
                 }
             }
         }
-        
+
         const lineTexts = sourceSelection.lineTexts;
-        
+
         if (useApiLines) {
         } else if (apiVocalTexts) {
         }
-        
+
         const nonEmptyTexts = lineTexts.filter(t => t.trim().length > 0);
         if (nonEmptyTexts.length === 0) {
             return;
         }
         const sourceLyricsKey = buildLyricsKey(nonEmptyTexts);
-        
+
         const detectedLang = apiLanguage || cachedSourceLanguage || state.detectedLanguage || undefined;
 
         let skipCheck: { skip: boolean; reason?: string; detectedLanguage?: string };
@@ -976,9 +977,9 @@ export async function translateCurrentLyrics(): Promise<void> {
         } else {
             skipCheck = preApiSkipCheck || await shouldSkipTranslation(nonEmptyTexts, state.targetLanguage, currentTrackUri || undefined);
         }
-        
+
         if (skipCheck.detectedLanguage) state.detectedLanguage = skipCheck.detectedLanguage;
-        
+
         let translations;
 
         if (skipCheck.skip) {
@@ -1071,7 +1072,7 @@ export async function translateCurrentLyrics(): Promise<void> {
 
         lastSkippedTranslation = null;
         lastSkipNotifyKey = null;
-        
+
         state.translatedLyrics.clear();
 
         const translationByContent = new Map<string, string>();
@@ -1340,9 +1341,6 @@ function buildTranslationNotification(
     return parts.join(' · ');
 }
 
-// Stricter echo check: strips ALL non-letter characters so "Kimi-Wa_Sekai!" and
-// "kimi wa sekai" normalize identically. Catches Google-Translate returning
-// lightly reformatted romaji when it auto-detects romaji-as-English.
 function looseLatinSkeleton(text: string): string {
     return (text || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 }
@@ -1360,9 +1358,6 @@ function applyTranslations(lines: NodeListOf<Element>): void {
         if (!translatedText) return;
         if (translatedText === originalText) return;
         if (normalizeForComparison(translatedText) === normalizeForComparison(originalText)) return;
-        // Only engage the Latin-skeleton echo guard if BOTH sides are pure Latin —
-        // a genuine Japanese→English translation will always pass this (original is
-        // non-Latin), while an echoed-romaji "translation" gets dropped.
         const bothLatin = /^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(originalText)
                        && /^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(translatedText);
         if (bothLatin && looseLatinSkeleton(translatedText) === looseLatinSkeleton(originalText)) {
@@ -1370,9 +1365,9 @@ function applyTranslations(lines: NodeListOf<Element>): void {
         }
         translationMapByIndex.set(lineIndex, translatedText);
     });
-    
+
     if (!isOverlayActive()) {
-        enableOverlay({ 
+        enableOverlay({
             mode: state.overlayMode,
             syncWordHighlight: state.syncWordHighlight
         });
@@ -1443,21 +1438,37 @@ async function fillVisibleGaps(): Promise<void> {
     }
 }
 
+export function forceRetranslate(): void {
+    lastSkippedTranslation = null;
+    lastSkipNotifyKey = null;
+    lastTranslatedRomanizationState = null;
+    state.lastTranslatedSongUri = null;
+    state.translatedLyrics.clear();
+    state._translationsByIndex = undefined;
+    state._qualityByIndex = undefined;
+
+    removeTranslations();
+
+    if (state.isEnabled) {
+        translateCurrentLyrics();
+    }
+}
+
 export function reapplyTranslations(): void {
     if (state.translatedLyrics.size === 0) return;
-    
+
     const savedTranslations = new Map(state.translatedLyrics);
     const savedIndexMap = state._translationsByIndex ? new Map(state._translationsByIndex) : undefined;
     const savedQualityMap = state._qualityByIndex ? new Map(state._qualityByIndex) : undefined;
     const savedUri = state.lastTranslatedSongUri;
-    
+
     removeTranslations();
-    
+
     state.translatedLyrics = savedTranslations;
     state._translationsByIndex = savedIndexMap;
     state._qualityByIndex = savedQualityMap;
     state.lastTranslatedSongUri = savedUri;
-    
+
     const lines = getLyricsLines();
     if (lines.length > 0) {
         applyTranslations(lines);
@@ -1474,7 +1485,7 @@ export function removeTranslations(): void {
     const docs = [document];
     const pip = getPIPWindow();
     if (pip) docs.push(pip.document);
-    
+
     docs.forEach(doc => {
         doc.querySelectorAll('[data-slt-original-html]').forEach(el => {
             const original = (el as HTMLElement).dataset.sltOriginalHtml;
@@ -1483,7 +1494,7 @@ export function removeTranslations(): void {
                 delete (el as HTMLElement).dataset.sltOriginalHtml;
             }
         });
-        
+
         doc.querySelectorAll('[data-slt-original-text]').forEach(el => {
             const original = (el as HTMLElement).dataset.sltOriginalText;
             if (original !== undefined) {
@@ -1491,19 +1502,19 @@ export function removeTranslations(): void {
                 delete (el as HTMLElement).dataset.sltOriginalText;
             }
         });
-        
+
         doc.querySelectorAll('[data-slt-replaced-with]').forEach(el => {
             delete (el as HTMLElement).dataset.sltReplacedWith;
         });
-        
+
         doc.querySelectorAll('.slt-replace-line').forEach(el => el.remove());
         doc.querySelectorAll('.slt-replace-hidden').forEach(el => el.classList.remove('slt-replace-hidden'));
-        
+
         doc.querySelectorAll('.spicy-translation-container').forEach(el => el.remove());
         doc.querySelectorAll('.slt-interleaved-translation').forEach(el => el.remove());
         doc.querySelectorAll('.spicy-hidden-original').forEach(el => el.classList.remove('spicy-hidden-original'));
         doc.querySelectorAll('.spicy-translated').forEach(el => el.classList.remove('spicy-translated'));
-        
+
         doc.querySelectorAll('.spicy-original-wrapper').forEach(wrapper => {
             const parent = wrapper.parentElement;
             if (parent) {
@@ -1513,7 +1524,7 @@ export function removeTranslations(): void {
             }
         });
     });
-    
+
     state.translatedLyrics.clear();
     state._translationsByIndex = undefined;
     state._qualityByIndex = undefined;
@@ -1524,12 +1535,12 @@ export function setupLyricsObserver(): void {
         lyricsObserver.disconnect();
         lyricsObserver = null;
     }
-    
+
     const lyricsContent = getLyricsContent();
     if (!lyricsContent) return;
-    
+
     observedLyricsContent = lyricsContent;
-    
+
     try {
         const hasLyricLineNode = (node: Node): boolean => {
             if (node.nodeType !== Node.ELEMENT_NODE) return false;
@@ -1539,14 +1550,27 @@ export function setupLyricsObserver(): void {
 
         lyricsObserver = new MutationObserver((mutations) => {
             if (!state.isEnabled || state.isTranslating) return;
-            
-            const hasNewContent = mutations.some(m => 
-                m.type === 'childList' && 
+
+            const hasNewContent = mutations.some(m =>
+                m.type === 'childList' &&
                 m.addedNodes.length > 0 &&
                 Array.from(m.addedNodes).some(hasLyricLineNode)
             );
-            
-            if (hasNewContent && state.autoTranslate && !state.isTranslating) {
+
+            if (!hasNewContent || state.isTranslating) return;
+
+            const alreadyTranslated = state.translatedLyrics.size > 0 && state.lastTranslatedSongUri === getCurrentTrackUri();
+
+            if (alreadyTranslated) {
+                if (rerenderDebounceTimer) clearTimeout(rerenderDebounceTimer);
+                rerenderDebounceTimer = setTimeout(() => {
+                    rerenderDebounceTimer = null;
+                    if (state.isTranslating) return;
+                    const lines = getLyricsLines();
+                    if (lines.length > 0) applyTranslations(lines);
+                    void fillVisibleGaps();
+                }, 200);
+            } else if (state.autoTranslate) {
                 if (translateDebounceTimer) clearTimeout(translateDebounceTimer);
                 translateDebounceTimer = setTimeout(() => {
                     translateDebounceTimer = null;
@@ -1561,7 +1585,7 @@ export function setupLyricsObserver(): void {
                 }, 500);
             }
         });
-        
+
         lyricsObserver.observe(lyricsContent, {
             childList: true,
             subtree: true
@@ -1577,18 +1601,18 @@ export async function onSpicyLyricsOpen(): Promise<void> {
         viewControls = await waitForElement('.Root__right-sidebar #SpicyLyricsPage .ViewControls', 2000);
     }
     if (!viewControls) viewControls = await waitForElement('.ViewControls', 2000);
-    
+
     if (viewControls) insertTranslateButton();
     setupLyricsObserver();
     setupRomanizationWatcher();
-    
+
     const pipWindow = getPIPWindow();
     if (pipWindow) {
         setTimeout(() => {
             insertTranslateButtonIntoDocument(pipWindow.document);
         }, 500);
     }
-    
+
     if (state.isEnabled) {
         updateButtonState();
         state.lastTranslatedSongUri = null;
@@ -1605,6 +1629,10 @@ export function onSpicyLyricsClose(): void {
     if (translateDebounceTimer) {
         clearTimeout(translateDebounceTimer);
         translateDebounceTimer = null;
+    }
+    if (rerenderDebounceTimer) {
+        clearTimeout(rerenderDebounceTimer);
+        rerenderDebounceTimer = null;
     }
     state.isTranslating = false;
     if (lyricsObserver) {
@@ -1628,16 +1656,12 @@ function setupRomanizationWatcher(): void {
             }
 
             if (state.isEnabled) {
-                // Wait for any in-progress translation to finish first
                 for (let i = 0; i < 20 && state.isTranslating; i++) {
                     await new Promise(resolve => setTimeout(resolve, 300));
                 }
 
-                // Remove existing translations from DOM
                 removeTranslations();
-                // Re-setup observer since LyricsContent may have been rebuilt
                 setupLyricsObserver();
-                // Force full re-translate (clear URI to bypass early return)
                 state.lastTranslatedSongUri = null;
                 await waitForLyricsAndTranslate(15, 500);
             }
@@ -1664,25 +1688,23 @@ function cleanupRomanizationWatcher(): void {
 
 export function setupViewModeObserver(): void {
     if (viewModeIntervalId) clearInterval(viewModeIntervalId);
-    
+
     viewModeIntervalId = setInterval(() => {
         const isOpen = isSpicyLyricsOpen();
         if (isOpen) {
             if (!document.querySelector('#TranslateToggle')) {
                 insertTranslateButton();
             }
-            
-            // Detect if romanization button was replaced (framework re-render)
+
             if (romanizationToggleButton && !romanizationToggleButton.isConnected) {
                 romanizationToggleListener = null;
                 romanizationToggleButton = null;
             }
-            
+
             if (!romanizationToggleListener && document.querySelector('#RomanizationToggle')) {
                 setupRomanizationWatcher();
             }
-            
-            // Detect if LyricsContent was replaced (framework re-render)
+
             if (observedLyricsContent && !observedLyricsContent.isConnected) {
                 if (lyricsObserver) {
                     lyricsObserver.disconnect();
@@ -1693,13 +1715,10 @@ export function setupViewModeObserver(): void {
             if (!lyricsObserver && state.isEnabled) {
                 setupLyricsObserver();
             }
-            
-            // Detect romanization state changes missed by click handler
+
             const currentRomanization = isRomanizationActive();
             if (lastKnownRomanizationState !== null && currentRomanization !== lastKnownRomanizationState) {
                 if (state.isEnabled) {
-                    // Don't act if already translating — the romanization handler or
-                    // translateCurrentLyrics will pick up the change via romanizationChanged check
                     if (!state.isTranslating) {
                         removeTranslations();
                         setupLyricsObserver();
@@ -1709,7 +1728,7 @@ export function setupViewModeObserver(): void {
                 }
             }
             lastKnownRomanizationState = currentRomanization;
-            
+
             const pipWindow = getPIPWindow();
             if (pipWindow && !pipWindow.document.querySelector('#TranslateToggle')) {
                 insertTranslateButtonIntoDocument(pipWindow.document);

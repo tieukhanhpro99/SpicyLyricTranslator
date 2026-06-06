@@ -1,5 +1,6 @@
 import { storage } from './storage';
 import { warn, error as logError } from './debug';
+import { displayModal, hideModal } from './modal';
 
 declare const __VERSION__: string;
 
@@ -385,7 +386,7 @@ async function performUpdate(release: GitHubRelease, version: VersionInfo, modal
                 
                 if (cancelBtn) {
                     cancelBtn.addEventListener('click', () => {
-                        Spicetify.PopupModal.hide();
+                        hideModal();
                         updateState.isUpdating = false;
                     });
                 }
@@ -456,7 +457,7 @@ function showUpdateModal(currentVersion: VersionInfo, latestVersion: VersionInfo
                 50% { transform: translateX(4px); }
             }
             .slt-update-modal {
-                padding: 20px;
+                padding: 2px;
                 color: var(--spice-text);
                 animation: slt-modal-fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
             }
@@ -745,7 +746,7 @@ function showUpdateModal(currentVersion: VersionInfo, latestVersion: VersionInfo
     `;
     
     if (Spicetify.PopupModal) {
-        Spicetify.PopupModal.display({
+        displayModal({
             title: 'Spicy Lyric Translator',
             content: content,
             isLarge: true
@@ -757,7 +758,7 @@ function showUpdateModal(currentVersion: VersionInfo, latestVersion: VersionInfo
             
             if (laterBtn) {
                 laterBtn.addEventListener('click', () => {
-                    Spicetify.PopupModal.hide();
+                    hideModal();
                 });
             }
             
@@ -868,19 +869,24 @@ function formatReleaseNotes(body: string): string {
         const bq = line.match(/^>\s?(.*)/);
         if (bq) { closeLists(); output.push(`<div style="border-left: 3px solid #1db954; padding-left: 12px; margin: 6px 0; color: var(--spice-subtext); font-style: italic;">${processInlineMarkdown(bq[1])}</div>`); continue; }
 
-        const ul = line.match(/^\s*[-*+]\s+(.*)/);
+        const ul = line.match(/^([ \t]*)[-*+]\s+(.*)/);
         if (ul) {
             if (inOl) { output.push('</ol>'); inOl = false; }
             if (!inUl) { output.push('<ul style="margin: 4px 0; padding-left: 0; list-style: none;">'); inUl = true; }
-            output.push(`<li style="display: flex; gap: 8px; margin: 4px 0;"><span style="color: #1db954;">•</span><span>${processInlineMarkdown(ul[1])}</span></li>`);
+            const indent = ul[1].replace(/\t/g, '  ').length;
+            const depth = Math.min(Math.floor(indent / 2), 5);
+            const markers = ['•', '◦', '▪', '‣', '·', '•'];
+            output.push(`<li style="display: flex; gap: 8px; margin: 3px 0; margin-left: ${depth * 18}px;"><span style="color: var(--slt-cl-accent, #1db954); flex-shrink: 0;">${markers[depth] || '•'}</span><span>${processInlineMarkdown(ul[2])}</span></li>`);
             continue;
         }
 
-        const ol = line.match(/^\s*(\d+)\.\s+(.*)/);
+        const ol = line.match(/^([ \t]*)(\d+)[.)]\s+(.*)/);
         if (ol) {
             if (inUl) { output.push('</ul>'); inUl = false; }
-            if (!inOl) { output.push('<ol style="margin: 4px 0; padding-left: 20px; color: var(--spice-subtext);">'); inOl = true; }
-            output.push(`<li style="margin: 4px 0;">${processInlineMarkdown(ol[2])}</li>`);
+            if (!inOl) { output.push('<ol style="margin: 4px 0; padding-left: 0; list-style: none;">'); inOl = true; }
+            const indent = ol[1].replace(/\t/g, '  ').length;
+            const depth = Math.min(Math.floor(indent / 2), 5);
+            output.push(`<li style="display: flex; gap: 8px; margin: 3px 0; margin-left: ${depth * 18}px;"><span style="color: var(--slt-cl-accent, #1db954); flex-shrink: 0; min-width: 16px; font-weight: 600;">${ol[2]}.</span><span>${processInlineMarkdown(ol[3])}</span></li>`);
             continue;
         }
 
@@ -1056,7 +1062,7 @@ function showChangelogModal(version: string, changelog: string, options: Changel
                 100% { transform: translateY(-20px) rotate(180deg); opacity: 0; }
             }
             .slt-changelog-modal {
-                padding: 20px;
+                padding: 2px;
                 color: var(--spice-text);
                 animation: slt-cl-fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
             }
@@ -1252,7 +1258,7 @@ function showChangelogModal(version: string, changelog: string, options: Changel
     `;
 
     if (Spicetify.PopupModal) {
-        Spicetify.PopupModal.display({
+        displayModal({
             title: 'Spicy Lyric Translator',
             content: content,
             isLarge: true
@@ -1262,7 +1268,7 @@ function showChangelogModal(version: string, changelog: string, options: Changel
             const dismissBtn = document.getElementById('slt-changelog-dismiss');
             if (dismissBtn) {
                 dismissBtn.addEventListener('click', () => {
-                    Spicetify.PopupModal.hide();
+                    hideModal();
                 });
             }
         }, 100);
@@ -1298,16 +1304,27 @@ async function fetchChangelogForVersion(version: string): Promise<string> {
 
 export async function showPostUpdateChangelog(): Promise<void> {
     const currentVersion = CURRENT_VERSION;
+    const currentHash = getContentHash();
     let targetVersion: string | null = null;
     let changelog: string | null = null;
 
-    const hotfixDetected = storage.get('hotfix-detected');
-    if (hotfixDetected) {
-        storage.remove('hotfix-detected');
+    const persistKnown = (): void => {
+        storage.set('last-known-version', currentVersion);
+        if (currentHash) storage.set('last-known-hash', currentHash);
+    };
+
+    const showHotfix = async (): Promise<void> => {
+        persistKnown();
         await new Promise(r => setTimeout(r, 2000));
         const hashShort = getContentHashShort();
         const hotfixChangelog = await fetchChangelogForVersion(currentVersion);
         showChangelogModal(currentVersion, hotfixChangelog || '', { isHotfix: true, hashShort });
+    };
+
+    const hotfixDetected = storage.get('hotfix-detected');
+    if (hotfixDetected) {
+        storage.remove('hotfix-detected');
+        await showHotfix();
         return;
     }
 
@@ -1322,7 +1339,7 @@ export async function showPostUpdateChangelog(): Promise<void> {
             const elapsed = Date.now() - parseInt(pendingTimestamp, 10);
             if (elapsed > 60 * 60 * 1000) {
                 storage.remove('pending-update-changelog');
-                storage.set('last-known-version', currentVersion);
+                persistKnown();
                 return;
             }
         }
@@ -1332,19 +1349,26 @@ export async function showPostUpdateChangelog(): Promise<void> {
         targetVersion = pendingVersion;
     } else {
         const lastKnownVersion = storage.get('last-known-version');
-        if (lastKnownVersion && lastKnownVersion !== currentVersion) {
+        const lastKnownHash = storage.get('last-known-hash');
+
+        if (!lastKnownVersion) {
+            persistKnown();
+            return;
+        }
+
+        if (lastKnownVersion !== currentVersion) {
             const lastParsed = parseVersion(lastKnownVersion);
             const currentParsed = parseVersion(currentVersion);
             if (lastParsed && currentParsed && compareVersions(currentParsed, lastParsed) > 0) {
                 targetVersion = currentVersion;
             }
-        } else if (!lastKnownVersion) {
-            storage.set('last-known-version', currentVersion);
+        } else if (currentHash && lastKnownHash && lastKnownHash !== currentHash) {
+            await showHotfix();
             return;
         }
     }
 
-    storage.set('last-known-version', currentVersion);
+    persistKnown();
 
     if (!targetVersion) return;
 
