@@ -116,10 +116,18 @@ class FakeDocument {
 
     querySelector(selector: string): any {
         if (selector === '.spicy-pip-wrapper') return null;
+        if (selector === '.slt-replace-line') return this.parent.inserted.find(el => el.classList.contains('slt-replace-line')) || null;
+        if (selector === '.slt-interleaved-translation') return this.parent.inserted.find(el => el.classList.contains('slt-interleaved-translation')) || null;
         return null;
     }
 
     querySelectorAll(selector: string): FakeElement[] {
+        if (selector === '.slt-replace-line') {
+            return this.parent.inserted.filter(el => el.classList.contains('slt-replace-line'));
+        }
+        if (selector === '.slt-interleaved-translation') {
+            return this.parent.inserted.filter(el => el.classList.contains('slt-interleaved-translation'));
+        }
         return selector.includes('.line') && !selector.includes('.slt-') ? [this.line] : [];
     }
 
@@ -163,6 +171,43 @@ test('romanized visible lyrics render index translations when content lookup mis
 
     assert.equal(fakeDocument.parent.inserted.length, 1);
     assert.equal(fakeDocument.parent.inserted[0].textContent, 'Mu\u1ed1n m\u00e3i \u0111ung \u0111\u01b0a th\u1ebf n\u00e0y th\u00f4i');
+
+    disableOverlay();
+});
+
+test('same-signature lyric rerender recreates missing translation elements after DOM rebuild', () => {
+    const line = new FakeElement('\u541b\u306f\u4e16\u754c', ['line']);
+    line.dataset.index = '0';
+    const fakeDocument = new FakeDocument(line);
+
+    (globalThis as any).document = fakeDocument;
+    (globalThis as any).window = {};
+    (globalThis as any).MutationObserver = class {
+        observe(): void {}
+        disconnect(): void {}
+    };
+    (globalThis as any).requestAnimationFrame = () => 1;
+    (globalThis as any).cancelAnimationFrame = () => {};
+    (globalThis as any).localStorage = {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+        key: () => null,
+        length: 0
+    };
+
+    clearOverlayContent();
+    enableOverlay({ mode: 'replace', syncWordHighlight: false });
+    updateOverlayContent(new Map([[0, 'Em l\u00e0 th\u1ebf gi\u1edbi']]));
+
+    assert.equal(fakeDocument.parent.inserted.length, 1);
+
+    fakeDocument.parent.inserted = [];
+    line.classList.remove('slt-replace-hidden');
+
+    updateOverlayContent(new Map([[0, 'Em l\u00e0 th\u1ebf gi\u1edbi']]));
+
+    assert.equal(fakeDocument.parent.inserted.length, 1);
 
     disableOverlay();
 });

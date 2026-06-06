@@ -3892,9 +3892,41 @@ ${text}`;
     }
     return parts.join("");
   }
+  function renderedOverlayIndexes(doc) {
+    const selector = currentConfig.mode === "replace" ? ".slt-replace-line" : ".slt-interleaved-translation";
+    const indexes = /* @__PURE__ */ new Set();
+    doc.querySelectorAll(selector).forEach((el) => {
+      const dataset = el.dataset;
+      const index = parseNonNegativeIndex(dataset.lineIndex || dataset.forLine);
+      if (index !== null)
+        indexes.add(index);
+    });
+    return indexes;
+  }
+  function hasRenderedOverlayForCurrentLines(doc, lines) {
+    const renderedIndexes = renderedOverlayIndexes(doc);
+    const expectedIndexes = /* @__PURE__ */ new Set();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const lineIndex = getLineElementIndex(line, i);
+      const originalText = extractLineText(line);
+      const translation = translationMap.get(lineIndex);
+      const isBreak = !originalText.trim() || /^[\s\-\u2022\u2013\u2014\u266A\u266B]+$/.test(originalText.trim());
+      const wants = currentConfig.mode === "replace" ? !!translation && translation !== originalText && !!line.parentNode : (!!translation || isBreak) && translation !== originalText && !!line.parentNode;
+      if (wants)
+        expectedIndexes.add(lineIndex);
+    }
+    if (expectedIndexes.size === 0)
+      return true;
+    for (const index of expectedIndexes) {
+      if (!renderedIndexes.has(index))
+        return false;
+    }
+    return true;
+  }
   function renderSignatureUnchanged(doc, lines) {
     const sig = computeRenderSignature(lines);
-    if (lastRenderSigMap.get(doc) === sig)
+    if (lastRenderSigMap.get(doc) === sig && hasRenderedOverlayForCurrentLines(doc, lines))
       return true;
     lastRenderSigMap.set(doc, sig);
     return false;
