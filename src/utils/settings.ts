@@ -9,7 +9,7 @@ import { clearLyricsCache, fetchLyricsForTrackUri } from './lyricsFetcher';
 import { SETTINGS_SCHEMA, SettingsEffect, SettingsField, getCurrentApiPreference, isSettingFieldVisible, readSettingValue, writeSettingValue } from './settingsModel';
 
 const SETTINGS_ID = 'spicy-lyric-translator-settings';
-const SPICY_LYRICS_CACHE_NAME = 'SpicyLyrics_LyricsStore';
+const SPICY_LYRICS_CACHE_NAMES = ['SpicyLyrics_LyricsStore_g1', 'SpicyLyrics_LyricsStore'];
 
 function showActionNotification(message: string, isError: boolean = false): void {
     if (state.showNotifications && Spicetify.showNotification) {
@@ -26,7 +26,7 @@ export async function clearSpicyLyricsCachedLyrics(): Promise<void> {
     try {
         clearLyricsCache();
         if (typeof caches !== 'undefined' && typeof caches.delete === 'function') {
-            await caches.delete(SPICY_LYRICS_CACHE_NAME);
+            await Promise.all(SPICY_LYRICS_CACHE_NAMES.map(name => caches.delete(name)));
         }
         showActionNotification('Spicy Lyrics cached lyrics deleted!');
     } catch (e) {
@@ -1778,15 +1778,16 @@ function openCacheViewer(): void {
     container.innerHTML = `<div style="padding: 20px; text-align: center;">Loading cache...</div>`;
     
     try {
-        let keys: readonly Request[] = [];
         let cacheItems: any[] = [];
         let totalSize = 0;
-        
+
         if (typeof caches !== 'undefined') {
-            const cache = await caches.open(SPICY_LYRICS_CACHE_NAME);
-            keys = await cache.keys();
-            
-            cacheItems = await Promise.all(keys.map(async (req) => {
+          for (const cacheName of SPICY_LYRICS_CACHE_NAMES) {
+            if (typeof caches.has === 'function' && !(await caches.has(cacheName))) continue;
+            const cache = await caches.open(cacheName);
+            const keys = await cache.keys();
+
+            const items = await Promise.all(keys.map(async (req) => {
                 const url = new URL(req.url);
                 const pathParts = url.pathname.split('/').filter(Boolean);
                 const trackId = pathParts.length > 0 ? pathParts[pathParts.length - 1] : null;
@@ -1842,10 +1843,12 @@ function openCacheViewer(): void {
                     }
                 } catch (e) {}
 
-                return { req, url, trackId, isTrackId, type, lang, linesCount, sizeBytes, source, trackLengthMs, cachedAt, rawJson, firstLineSample };
+                return { req, cacheName, url, trackId, isTrackId, type, lang, linesCount, sizeBytes, source, trackLengthMs, cachedAt, rawJson, firstLineSample };
             }));
+            cacheItems.push(...items);
+          }
         }
-        
+
         let currentTotalSize = totalSize;
         
         container.innerHTML = `
@@ -2107,7 +2110,7 @@ function openCacheViewer(): void {
                     if (item.lang) chips.push(`<span class="slt-metric-pill" title="Language">${escapeHtml(String(item.lang).toUpperCase())}</span>`);
 
                     return `
-                    <div class="slt-cache-item" data-url="${escapeHtml(item.req.url)}" data-size="${item.sizeBytes}" data-track="${item.isTrackId ? item.trackId : ''}" data-index="${index}">
+                    <div class="slt-cache-item" data-url="${escapeHtml(item.req.url)}" data-cache="${escapeHtml(item.cacheName)}" data-size="${item.sizeBytes}" data-track="${item.isTrackId ? item.trackId : ''}" data-index="${index}">
                         <div class="slt-cache-item-info">
                             <span class="slt-cache-item-title">${escapeHtml(displayTitle)}</span>
                             <span class="slt-cache-item-meta">${escapeHtml(metaText)}</span>
@@ -2178,9 +2181,10 @@ function openCacheViewer(): void {
                 const item = (e.target as HTMLElement).closest('.slt-cache-item') as HTMLElement;
                 if (item) {
                     const url = item.dataset.url;
+                    const cacheName = item.dataset.cache || SPICY_LYRICS_CACHE_NAMES[0];
                     if (url && typeof caches !== 'undefined') {
                         try {
-                            const cache = await caches.open(SPICY_LYRICS_CACHE_NAME);
+                            const cache = await caches.open(cacheName);
                             await cache.delete(url);
                             
                             const itemSize = parseInt(item.dataset.size || '0', 10);
@@ -2433,6 +2437,8 @@ async function openSpicyLyricsCacheViewer(): Promise<void> {
     }
 }
 
+const SLT_MENU_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>';
+
 export function openSettingsModal(): void {
     if (Spicetify.PopupModal) {
         displayModal({
@@ -2454,28 +2460,12 @@ export async function registerSettings(): Promise<void> {
         const registerMenuItem = () => {
             if ((Spicetify as any).Menu) {
                 try {
-                    [
-                        {
-                            label: 'Spicy Lyric Translator Settings',
-                            callback: openSettingsModal
-                        },
-                        {
-                            label: 'Clear Spicy Lyrics Cache',
-                            callback: () => {
-                                void clearSpicyLyricsCachedLyrics();
-                            }
-                        },
-                        {
-                            label: 'Clear SLT Translation Cache',
-                            callback: clearAllCachedTranslations
-                        }
-                    ].forEach(item => {
-                        new (Spicetify as any).Menu.Item(
-                            item.label,
-                            false,
-                            item.callback
-                        ).register();
-                    });
+                    new (Spicetify as any).Menu.Item(
+                        'SLT Settings',
+                        false,
+                        openSettingsModal,
+                        SLT_MENU_ICON
+                    ).register();
                     return true;
                 } catch (e) {
                 }

@@ -59,6 +59,8 @@ const LANGUAGE_NAME_TO_CODE: Record<string, string> = {
     greek: 'el'
 };
 
+const ENGLISH_EQUIVALENT_CODES = new Set(['pcm', 'sco', 'jam', 'cpe']);
+
 export function normalizeLanguageCode(code?: string | null): string {
     if (!code) return 'unknown';
     const value = code.trim().toLowerCase();
@@ -72,7 +74,10 @@ export function normalizeLanguageCode(code?: string | null): string {
 
     if (LANGUAGE_NAME_TO_CODE[nameKey]) return LANGUAGE_NAME_TO_CODE[nameKey];
     if (LANGUAGE_NAME_TO_CODE[value]) return LANGUAGE_NAME_TO_CODE[value];
-    return value.replace(/_/g, '-').split('-')[0];
+
+    const base = value.replace(/_/g, '-').split('-')[0];
+    if (ENGLISH_EQUIVALENT_CODES.has(base)) return 'en';
+    return base;
 }
 
 function getSampleIndices(length: number): number[] {
@@ -107,9 +112,41 @@ function buildSampleText(lines: string[]): string {
 }
 
 function tokenizeWords(text: string): string[] {
-    const matches = text.toLowerCase().match(/[\p{L}']+/gu);
+    const normalized = text.replace(/[’ʼ‘`´]/g, "'");
+    const matches = normalized.toLowerCase().match(/[\p{L}']+/gu);
     if (!matches) return [];
     return matches.filter(word => word.length > 1);
+}
+
+const ELISION_PREFIX_TO_WORD: Record<string, string> = {
+    j: 'je',
+    l: 'le',
+    d: 'de',
+    m: 'me',
+    t: 'te',
+    s: 'se',
+    n: 'ne',
+    c: 'ce',
+    qu: 'que',
+    jusqu: 'jusque',
+    puisqu: 'puisque',
+    lorsqu: 'lorsque',
+    quoiqu: 'quoique'
+};
+
+function expandElidedWords(words: string[]): string[] {
+    const expanded: string[] = [];
+    for (const word of words) {
+        expanded.push(word);
+        const apostropheIndex = word.indexOf("'");
+        if (apostropheIndex <= 0) continue;
+        const prefix = word.slice(0, apostropheIndex);
+        const rest = word.slice(apostropheIndex + 1);
+        const mapped = ELISION_PREFIX_TO_WORD[prefix];
+        if (mapped) expanded.push(mapped);
+        if (rest.length > 1) expanded.push(rest);
+    }
+    return expanded;
 }
 
 const NON_LATIN_SCRIPT_DETECTION_REGEX = /[぀-ヿ一-鿿가-힯؀-ۿ֐-׿Ѐ-ӿ฀-๿ऀ-ॿͰ-Ͽ]/;
@@ -187,6 +224,49 @@ export function scanCorpusForCjk(
     return null;
 }
 
+const DISTINCTIVE_LATIN_MARKERS: { code: string; chars: string }[] = [
+    { code: 'pl', chars: 'łżźśń' },
+    { code: 'cs', chars: 'řěů' },
+    { code: 'lt', chars: 'ėįų' },
+    { code: 'lv', chars: 'āēīģķļņ' },
+    { code: 'hr', chars: 'đ' },
+];
+
+const DISTINCTIVE_MARKER_SETS: { code: string; chars: Set<string> }[] = DISTINCTIVE_LATIN_MARKERS.map(entry => ({
+    code: entry.code,
+    chars: new Set(entry.chars.split(''))
+}));
+
+const VIETNAMESE_MARKER_REGEX = /[ơướờởỡợứừửữự]/i;
+
+export function detectByDistinctiveLatinMarkers(text: string): { code: string; confidence: number } | null {
+    if (!text) return null;
+    if (VIETNAMESE_MARKER_REGEX.test(text)) return null;
+
+    const lower = text.toLowerCase();
+    const counts: Record<string, number> = {};
+
+    for (const char of lower) {
+        for (const marker of DISTINCTIVE_MARKER_SETS) {
+            if (marker.chars.has(char)) {
+                counts[marker.code] = (counts[marker.code] || 0) + 1;
+            }
+        }
+    }
+
+    const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (ranked.length === 0) return null;
+
+    const [topCode, topCount] = ranked[0];
+    const runnerUp = ranked[1]?.[1] ?? 0;
+
+    if (topCount < 2 && !(topCount === 1 && runnerUp === 0)) return null;
+    if (topCount <= runnerUp) return null;
+
+    const confidence = Math.min(0.9, 0.78 + Math.min(topCount, 6) * 0.02);
+    return { code: topCode, confidence };
+}
+
 export function detectLanguageHeuristic(text: string): { code: string; confidence: number } | null {
     if (!text) return null;
 
@@ -194,6 +274,11 @@ export function detectLanguageHeuristic(text: string): { code: string; confidenc
     const minLength = hasNonLatinScript ? 1 : 10;
     if (text.length < minLength) {
         return null;
+    }
+
+    const distinctive = detectByDistinctiveLatinMarkers(text);
+    if (distinctive) {
+        return distinctive;
     }
 
     const normalizedText = text.trim();
@@ -246,14 +331,16 @@ export function detectLanguageHeuristic(text: string): { code: string; confidenc
     if (words.length < 3) {
         return null;
     }
-    
+
+    const matchWords = expandElidedWords(words);
+
     const wordCounts: { [code: string]: number } = {};
     let maxCount = 0;
     let maxLang = 'en';
-    
+
     for (const lang of LATIN_LANGUAGE_WORD_SETS) {
         let count = 0;
-        for (const word of words) {
+        for (const word of matchWords) {
             if (lang.words.has(word)) {
                 count++;
             }
@@ -304,9 +391,10 @@ async function detectLanguageViaAPI(text: string): Promise<{ code: string; confi
     }
     
     const data = await response.json();
-    const detectedLang = typeof data?.[2] === 'string' ? data[2] : 'unknown';
+    const rawDetectedLang = typeof data?.[2] === 'string' ? data[2] : 'unknown';
+    const detectedLang = rawDetectedLang === 'unknown' ? 'unknown' : normalizeLanguageCode(rawDetectedLang);
     const confidence = detectedLang !== 'unknown' ? 0.9 : 0.5;
-    
+
     return { code: detectedLang, confidence };
 }
 

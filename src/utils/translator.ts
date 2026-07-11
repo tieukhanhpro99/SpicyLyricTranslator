@@ -871,8 +871,9 @@ async function translateWithGoogle(text: string, targetLang: string, sourceLang?
     }
 
     const data = await response.json();
-    const detectedLang = data[2] || 'unknown';
-    
+    const rawDetectedLang = data[2] || 'unknown';
+    const detectedLang = rawDetectedLang === 'unknown' ? 'unknown' : normalizeLanguageCode(rawDetectedLang);
+
     if (data && data[0]) {
         let translation = '';
         for (const sentence of data[0]) {
@@ -1045,6 +1046,7 @@ function buildOpenAIChatBody(text: string, langName: string): Record<string, unk
     const model = normalizeOpenAIModelName(openaiModel);
     const useSpeedMode = isOpenAISpeedModeModel(model);
     const instruction = buildSongLyricsTranslationInstruction(langName);
+    const outputTokenBudget = Math.max(text.length * 4, useSpeedMode ? 8000 : 2048);
     const body: Record<string, unknown> = {
         model,
         messages: [
@@ -1057,7 +1059,7 @@ function buildOpenAIChatBody(text: string, langName: string): Record<string, unk
                 content: text
             }
         ],
-        max_completion_tokens: Math.max(text.length * 3, 500)
+        max_completion_tokens: outputTokenBudget
     };
 
     if (useSpeedMode) {
@@ -1619,6 +1621,16 @@ function providerSupportsParallelChunking(): boolean {
     return false;
 }
 
+function providerHandlesMarkerBatch(): boolean {
+    if (preferredApi === 'libretranslate' || preferredApi === 'deepl') {
+        return false;
+    }
+    if (preferredApi === 'custom') {
+        return customApiFormat === 'openai' || customApiFormat === 'gemini';
+    }
+    return true;
+}
+
 function getConfiguredParallelCap(): number {
     return Math.min(MAX_PARALLEL_CHUNKS, Math.max(1, Math.floor(maxParallelChunks) || 1));
 }
@@ -1759,24 +1771,26 @@ async function translateSourceAlignedBatch(lines: string[], targetLang: string, 
         }
     }
 
-    try {
-        const { combinedText, markerNonce } = buildMarkedBatchPayload(lines);
-        const result = await retryWithBackoff(() => translateText(combinedText, targetLang, sourceLang));
-        const parsed =
-            parseMarkedBatchResponse(result.translatedText, lines.length, markerNonce) ||
-            parseBatchTextFallbacks(result.translatedText, lines.length);
+    if (providerHandlesMarkerBatch()) {
+        try {
+            const { combinedText, markerNonce } = buildMarkedBatchPayload(lines);
+            const result = await retryWithBackoff(() => translateText(combinedText, targetLang, sourceLang));
+            const parsed =
+                parseMarkedBatchResponse(result.translatedText, lines.length, markerNonce) ||
+                parseBatchTextFallbacks(result.translatedText, lines.length);
 
-        if (parsed && parsed.length === lines.length) {
-            return { translations: parsed, detectedLang: result.detectedLanguage };
+            if (parsed && parsed.length === lines.length) {
+                return { translations: parsed, detectedLang: result.detectedLanguage };
+            }
+        } catch (markerBatchError) {
+            warn('Source-aligned marker batch failed, falling back to chunked batch:', markerBatchError);
         }
-    } catch (markerBatchError) {
-        warn('Source-aligned marker batch failed, falling back to chunked batch:', markerBatchError);
-    }
 
-    try {
-        return await translateChunkedBatch(lines, targetLang, BATCH_CHUNK_SIZE, sourceLang);
-    } catch (chunkedError) {
-        warn('Source-aligned chunked batch failed, falling back to per-line translation:', chunkedError);
+        try {
+            return await translateChunkedBatch(lines, targetLang, BATCH_CHUNK_SIZE, sourceLang);
+        } catch (chunkedError) {
+            warn('Source-aligned chunked batch failed, falling back to per-line translation:', chunkedError);
+        }
     }
 
     const translations: string[] = [];
@@ -2185,7 +2199,7 @@ async function translateLyricsInner(
             }
         }
 
-        if (!translatedLines && !hasMixedSourceLanguages) {
+        if (!translatedLines && !hasMixedSourceLanguages && providerHandlesMarkerBatch()) {
             const { combinedText, markerNonce } = buildMarkedBatchPayload(uncachedLines.map(l => l.text));
             const result = await retryWithBackoff(() => translateText(combinedText, targetLang, detectedSourceLang));
             translatedLines =
@@ -2197,7 +2211,7 @@ async function translateLyricsInner(
             }
         }
 
-        if (!hasMixedSourceLanguages && (!translatedLines || translatedLines.length !== uncachedLines.length) && uncachedLines.length > 1) {
+        if (!hasMixedSourceLanguages && (!translatedLines || translatedLines.length !== uncachedLines.length) && uncachedLines.length > 1 && providerHandlesMarkerBatch()) {
             warn(`Primary batch parse failed for ${uncachedLines.length} lines, trying chunked batch mode (${BATCH_CHUNK_SIZE}/request)`);
             try {
                 const chunked = await translateChunkedBatch(uncachedLines.map(l => l.text), targetLang, BATCH_CHUNK_SIZE, detectedSourceLang);
@@ -2239,7 +2253,22 @@ async function translateLyricsInner(
         if (!translatedLines || translatedLines.length !== uncachedLines.length) {
             throw new Error(`Translation mismatch: Sent ${uncachedLines.length} lines, got ${translatedLines?.length ?? 0}.`);
         }
-        
+
+        for (let i = 0; i < uncachedLines.length; i++) {
+            const item = uncachedLines[i];
+            if (!item.text.trim()) continue;
+            if (normalizeTranslatedLine(translatedLines[i] || '')) continue;
+            try {
+                const lineSourceLang = getLineSourceLangHint(item.text, targetLang, detectedSourceLang, hasMixedSourceLanguages);
+                const single = await retryWithBackoff(() => translateText(item.text, targetLang, lineSourceLang), 1);
+                if (normalizeTranslatedLine(single.translatedText || '')) {
+                    translatedLines[i] = single.translatedText;
+                }
+            } catch (blankLineError) {
+                warn('Re-translation of blank batch line failed:', item.index, blankLineError);
+            }
+        }
+
         uncachedLines.forEach((item, i) => {
             cachedResults.set(item.index, {
                 originalText: item.text,
@@ -2280,7 +2309,8 @@ async function translateLyricsInner(
                 }
             }
 
-            if (sourceAndTargetMatch && !hasMeaningfulTranslationDifference(item.text, finalTranslation, targetLang)) {
+            const latinLineInMixedScriptTrack = targetWantsLatin && hasConfidentNonTargetLine && !sourceIsNonLatin;
+            if ((sourceAndTargetMatch || latinLineInMixedScriptTrack) && !hasMeaningfulTranslationDifference(item.text, finalTranslation, targetLang)) {
                 finalTranslation = item.text;
             }
 
