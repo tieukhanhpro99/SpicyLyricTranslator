@@ -1410,6 +1410,19 @@ var SpicyLyricTranslater = (() => {
         return void 0;
     }
   }
+  function providerUsesWholeSongContext() {
+    if (preferredApi === "gemini" || preferredApi === "openai")
+      return true;
+    return preferredApi === "custom" && (customApiFormat === "gemini" || customApiFormat === "openai");
+  }
+  function isTrackCacheCompatibleWithProvider(trackCache) {
+    if (trackCache.api && trackCache.api !== preferredApi)
+      return false;
+    const activeModel = getActiveModelName();
+    if (activeModel && trackCache.metrics?.model && trackCache.metrics.model !== activeModel)
+      return false;
+    return true;
+  }
   var BATCH_SEPARATOR_REGEX = /\s*\|\|\|\s*/g;
   var BATCH_MARKER_PREFIX = "[[SLT_BATCH_";
   var BATCH_CHUNK_SIZE = 6;
@@ -2226,6 +2239,29 @@ ${text}`;
     const separator = url.includes("?") ? "&" : "?";
     return `${url}${separator}key=${encodeURIComponent(apiKey)}`;
   }
+  function getGeminiThinkingConfig(model) {
+    const normalized = normalizeGeminiModelName(model).toLowerCase();
+    if (/^gemini-3(?:[.-]|$)/.test(normalized)) {
+      if (normalized.includes("flash"))
+        return { thinkingLevel: "minimal" };
+      if (normalized.includes("pro"))
+        return { thinkingLevel: "low" };
+    }
+    if (/^gemini-2\.5-.*flash/.test(normalized)) {
+      return { thinkingBudget: 0 };
+    }
+    return void 0;
+  }
+  function buildGeminiGenerationConfig(text, model) {
+    const config = {
+      temperature: geminiTemperature,
+      maxOutputTokens: Math.min(65536, Math.max(text.length * 4, 8192))
+    };
+    const thinkingConfig = getGeminiThinkingConfig(model);
+    if (thinkingConfig)
+      config.thinkingConfig = thinkingConfig;
+    return config;
+  }
   async function translateWithGemini(text, targetLang) {
     if (!geminiApiKey) {
       throw createProviderConfigError("Gemini API key not configured. Set it in Settings.");
@@ -2243,10 +2279,7 @@ ${text}`;
             ]
           }
         ],
-        generationConfig: {
-          temperature: geminiTemperature,
-          maxOutputTokens: Math.max(text.length * 3, 2048)
-        }
+        generationConfig: buildGeminiGenerationConfig(text, geminiModel)
       },
       {
         "Content-Type": "application/json"
@@ -2256,7 +2289,11 @@ ${text}`;
     );
     recordApiUsage(extractGeminiUsage(data));
     if (data.candidates && data.candidates.length > 0) {
-      const translation = data.candidates[0]?.content?.parts?.[0]?.text?.trim();
+      const candidate = data.candidates[0];
+      if (candidate?.finishReason === "MAX_TOKENS") {
+        throw new NonRetryableProviderError("Gemini response was truncated because the output token limit was reached. No partial translation was used.");
+      }
+      const translation = candidate?.content?.parts?.map((part) => typeof part?.text === "string" ? part.text : "").join("").trim();
       if (translation) {
         return { translation };
       }
@@ -2360,10 +2397,7 @@ ${text}`;
             ]
           }
         ],
-        generationConfig: {
-          temperature: geminiTemperature,
-          maxOutputTokens: Math.max(text.length * 3, 500)
-        }
+        generationConfig: buildGeminiGenerationConfig(text, customApiModel || geminiModel)
       };
     }
     if (format === "deepl") {
@@ -3035,7 +3069,9 @@ ${text}`;
     if (currentTrackUri && !skipTrackCache) {
       const trackCache = getTrackCache(currentTrackUri, targetLang);
       if (trackCache && trackCache.lines.length === lines.length) {
-        if (shouldInvalidateSameLanguageTrackCache(trackCache.lang, targetLang, lines, trackCache.lines)) {
+        if (!isTrackCacheCompatibleWithProvider(trackCache)) {
+          deleteTrackCache(currentTrackUri, targetLang);
+        } else if (shouldInvalidateSameLanguageTrackCache(trackCache.lang, targetLang, lines, trackCache.lines)) {
           deleteTrackCache(currentTrackUri, targetLang);
         } else if (trackCache.sourceFingerprint && trackCache.sourceFingerprint === sourceFingerprint) {
           if (!shouldInvalidateTrackCacheForMixedContent(lines, trackCache.lines, targetLang)) {
@@ -3058,6 +3094,7 @@ ${text}`;
     const cachedResults = /* @__PURE__ */ new Map();
     const uncachedLines = [];
     const lineCacheSnapshot = storage_default.getJSON("translation-cache", {});
+    const requireWholeSongContext = providerUsesWholeSongContext();
     lines.forEach((line, index) => {
       if (!line.trim()) {
         cachedResults.set(index, {
@@ -3067,7 +3104,7 @@ ${text}`;
           wasTranslated: false,
           source: "cache"
         });
-      } else {
+      } else if (!requireWholeSongContext) {
         const cached = getCachedTranslation(line, targetLang);
         if (cached) {
           const lineKey = `${targetLang}:${line}`;
@@ -3083,6 +3120,8 @@ ${text}`;
         } else {
           uncachedLines.push({ index, text: line });
         }
+      } else {
+        uncachedLines.push({ index, text: line });
       }
     });
     if (uncachedLines.length === 0) {
@@ -9439,7 +9478,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     if (!someTranslated)
       return null;
     const fromApi = translations.some((t) => t.wasTranslated === true && t.source === "api");
-    const apiProvider = translations.find((t) => t.apiProvider)?.apiProvider;
+    const apiProvider = translations.find((t) => t.wasTranslated === true && t.source === "api" && t.apiProvider)?.apiProvider || translations.find((t) => t.apiProvider)?.apiProvider;
     const providerLabel = formatProviderName(apiProvider);
     if (!fromApi) {
       return providerLabel ? `Translated from cache \xB7 ${providerLabel}` : "Translated from cache";
@@ -9774,6 +9813,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     cleanupRomanizationWatcher();
     const handler = () => {
       setTimeout(async () => {
+        const currentTrackUri = getCurrentTrackUri();
+        if (currentTrackUri && isRomanizationActive()) {
+          romanizationRepairAttempts.delete(currentTrackUri);
+        }
         const repaired = await repairMissingRomanizationCacheIfNeeded();
         if (repaired) {
           await new Promise((resolve) => setTimeout(resolve, 1800));

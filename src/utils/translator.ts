@@ -128,6 +128,20 @@ function getActiveModelName(): string | undefined {
     }
 }
 
+function providerUsesWholeSongContext(): boolean {
+    if (preferredApi === 'gemini' || preferredApi === 'openai') return true;
+    return preferredApi === 'custom' && (customApiFormat === 'gemini' || customApiFormat === 'openai');
+}
+
+function isTrackCacheCompatibleWithProvider(trackCache: { api?: string; metrics?: TrackCacheMetrics }): boolean {
+    if (trackCache.api && trackCache.api !== preferredApi) return false;
+
+    const activeModel = getActiveModelName();
+    if (activeModel && trackCache.metrics?.model && trackCache.metrics.model !== activeModel) return false;
+
+    return true;
+}
+
 const BATCH_SEPARATOR = ' ||| ';
 const BATCH_SEPARATOR_REGEX = /\s*\|\|\|\s*/g;
 const BATCH_MARKER_PREFIX = '[[SLT_BATCH_';
@@ -1103,6 +1117,31 @@ function appendGeminiApiKeyQuery(url: string, apiKey: string): string {
     return `${url}${separator}key=${encodeURIComponent(apiKey)}`;
 }
 
+function getGeminiThinkingConfig(model: string | undefined): Record<string, string | number> | undefined {
+    const normalized = normalizeGeminiModelName(model).toLowerCase();
+
+    if (/^gemini-3(?:[.-]|$)/.test(normalized)) {
+        if (normalized.includes('flash')) return { thinkingLevel: 'minimal' };
+        if (normalized.includes('pro')) return { thinkingLevel: 'low' };
+    }
+
+    if (/^gemini-2\.5-.*flash/.test(normalized)) {
+        return { thinkingBudget: 0 };
+    }
+
+    return undefined;
+}
+
+function buildGeminiGenerationConfig(text: string, model: string | undefined): Record<string, unknown> {
+    const config: Record<string, unknown> = {
+        temperature: geminiTemperature,
+        maxOutputTokens: Math.min(65536, Math.max(text.length * 4, 8192))
+    };
+    const thinkingConfig = getGeminiThinkingConfig(model);
+    if (thinkingConfig) config.thinkingConfig = thinkingConfig;
+    return config;
+}
+
 async function translateWithGemini(text: string, targetLang: string): Promise<{ translation: string; detectedLang?: string }> {
     if (!geminiApiKey) {
         throw createProviderConfigError('Gemini API key not configured. Set it in Settings.');
@@ -1122,10 +1161,7 @@ async function translateWithGemini(text: string, targetLang: string): Promise<{ 
                     ]
                 }
             ],
-            generationConfig: {
-                temperature: geminiTemperature,
-                maxOutputTokens: Math.max(text.length * 3, 2048)
-            }
+            generationConfig: buildGeminiGenerationConfig(text, geminiModel)
         },
         {
             'Content-Type': 'application/json'
@@ -1137,7 +1173,15 @@ async function translateWithGemini(text: string, targetLang: string): Promise<{ 
     recordApiUsage(extractGeminiUsage(data));
 
     if (data.candidates && data.candidates.length > 0) {
-        const translation = data.candidates[0]?.content?.parts?.[0]?.text?.trim();
+        const candidate = data.candidates[0];
+        if (candidate?.finishReason === 'MAX_TOKENS') {
+            throw new NonRetryableProviderError('Gemini response was truncated because the output token limit was reached. No partial translation was used.');
+        }
+
+        const translation = candidate?.content?.parts
+            ?.map((part: any) => typeof part?.text === 'string' ? part.text : '')
+            .join('')
+            .trim();
         if (translation) {
             return { translation };
         }
@@ -1254,10 +1298,7 @@ function buildCustomSingleBody(text: string, targetLang: string, format: CustomA
                     ]
                 }
             ],
-            generationConfig: {
-                temperature: geminiTemperature,
-                maxOutputTokens: Math.max(text.length * 3, 500)
-            }
+            generationConfig: buildGeminiGenerationConfig(text, customApiModel || geminiModel)
         };
     }
 
@@ -2088,7 +2129,9 @@ async function translateLyricsInner(
     if (currentTrackUri && !skipTrackCache) {
         const trackCache = getTrackCache(currentTrackUri, targetLang);
         if (trackCache && trackCache.lines.length === lines.length) {
-            if (shouldInvalidateSameLanguageTrackCache(trackCache.lang, targetLang, lines, trackCache.lines)) {
+            if (!isTrackCacheCompatibleWithProvider(trackCache)) {
+                deleteTrackCache(currentTrackUri, targetLang);
+            } else if (shouldInvalidateSameLanguageTrackCache(trackCache.lang, targetLang, lines, trackCache.lines)) {
                 deleteTrackCache(currentTrackUri, targetLang);
             } else if (trackCache.sourceFingerprint && trackCache.sourceFingerprint === sourceFingerprint) {
                 if (!shouldInvalidateTrackCacheForMixedContent(lines, trackCache.lines, targetLang)) {
@@ -2113,6 +2156,7 @@ async function translateLyricsInner(
     const cachedResults: Map<number, TranslationResult> = new Map();
     const uncachedLines: { index: number; text: string }[] = [];
     const lineCacheSnapshot = storage.getJSON<TranslationCache>('translation-cache', {});
+    const requireWholeSongContext = providerUsesWholeSongContext();
 
     lines.forEach((line, index) => {
         if (!line.trim()) {
@@ -2123,7 +2167,7 @@ async function translateLyricsInner(
                 wasTranslated: false,
                 source: 'cache'
             });
-        } else {
+        } else if (!requireWholeSongContext) {
             const cached = getCachedTranslation(line, targetLang);
             if (cached) {
                 const lineKey = `${targetLang}:${line}`;
@@ -2139,6 +2183,8 @@ async function translateLyricsInner(
             } else {
                 uncachedLines.push({ index, text: line });
             }
+        } else {
+            uncachedLines.push({ index, text: line });
         }
     });
     

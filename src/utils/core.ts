@@ -1340,7 +1340,8 @@ function buildTranslationNotification(
     if (!someTranslated) return null;
 
     const fromApi = translations.some(t => t.wasTranslated === true && t.source === 'api');
-    const apiProvider = translations.find(t => t.apiProvider)?.apiProvider;
+    const apiProvider = translations.find(t => t.wasTranslated === true && t.source === 'api' && t.apiProvider)?.apiProvider
+        || translations.find(t => t.apiProvider)?.apiProvider;
     const providerLabel = formatProviderName(apiProvider);
 
     if (!fromApi) {
@@ -1695,6 +1696,10 @@ function setupRomanizationWatcher(): void {
 
     const handler = () => {
         setTimeout(async () => {
+            const currentTrackUri = getCurrentTrackUri();
+            if (currentTrackUri && isRomanizationActive()) {
+                romanizationRepairAttempts.delete(currentTrackUri);
+            }
             const repaired = await repairMissingRomanizationCacheIfNeeded();
             if (repaired) {
                 await new Promise(resolve => setTimeout(resolve, 1800));

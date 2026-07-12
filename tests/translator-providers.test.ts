@@ -47,7 +47,8 @@ function resetState(): void {
         openaiModel: 'gpt-4o-mini',
         geminiApiKey: '',
         geminiModel: 'gemini-3.1-flash-lite',
-        geminiTemperature: '0.3'
+        geminiTemperature: '0.3',
+        maxParallelChunks: 4
     } as any);
 }
 
@@ -544,6 +545,28 @@ test('Gemini uses the configured model in the generateContent endpoint and sends
     assert.deepEqual(calls[0].init?.headers, { 'Content-Type': 'application/json' });
 });
 
+test('Gemini 3.5 Flash uses minimal thinking and reserves enough output for full lyrics', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.5-flash'
+    } as any);
+
+    const calls: FetchCall[] = [];
+    (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return jsonResponse({
+            candidates: [{ content: { parts: [{ text: 'Xin chao' }] }, finishReason: 'STOP' }]
+        });
+    };
+
+    await translateText('\u3053\u3093\u306b\u3061\u306f', 'vi', 'ja');
+
+    const body = JSON.parse(String(calls[0].init?.body));
+    assert.deepEqual(body.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+    assert.equal(body.generationConfig.maxOutputTokens >= 8192, true);
+});
+
 test('Gemini preserves custom pasted model text in the generateContent endpoint', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {
@@ -570,11 +593,11 @@ test('Gemini preserves custom pasted model text in the generateContent endpoint'
     assert.equal(calls[0].url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=gemini-key');
 });
 
-test('Gemini omits thinkingConfig so generic models do not 400 on unknown options', async () => {
+test('Gemini omits thinkingConfig for unknown custom model ids', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {
         geminiApiKey: 'gemini-key',
-        geminiModel: 'gemini-3.1-flash-lite'
+        geminiModel: 'gemini-experimental-custom'
     } as any);
 
     const calls: FetchCall[] = [];
@@ -595,6 +618,36 @@ test('Gemini omits thinkingConfig so generic models do not 400 on unknown option
 
     const body = JSON.parse(String(calls[0].init?.body));
     assert.equal(Object.prototype.hasOwnProperty.call(body.generationConfig, 'thinkingConfig'), false);
+});
+
+test('Gemini truncated batch response does not fan out into per-line requests', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.5-flash',
+        maxParallelChunks: 1
+    } as any);
+
+    const calls: FetchCall[] = [];
+    (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        return jsonResponse({
+            candidates: [{
+                content: { parts: [{ text: '[[SLT_BATCH_test_0]]Ban dich bi cat\n[[SLT_BATCH_' }] },
+                finishReason: 'MAX_TOKENS'
+            }],
+            usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 100, thoughtsTokenCount: 7000 }
+        });
+    };
+
+    const { translateLyrics } = require('../src/utils/translator') as {
+        translateLyrics: (lines: string[], targetLang: string, trackUri?: string, sourceLang?: string, skipTrackCache?: boolean) => Promise<any[]>;
+    };
+    const lines = ['\u604b\u306e\u59cb\u307e\u308a', '\u5922\u306e\u7d9a\u304d', '\u6c38\u9060\u306b\u611b\u3057\u3066\u308b'];
+    const results = await translateLyrics(lines, 'vi', undefined, 'ja', true);
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(results.map(result => result.translatedText), lines);
 });
 
 test('Gemini uses the configured temperature in generationConfig', async () => {
@@ -756,6 +809,50 @@ test('Gemini batch translation persists model/duration/token metrics in the trac
     assert.equal(cached[0].metrics.totalTokens, 168);
     assert.equal(cached[0].metrics.apiCalls >= 1, true);
     assert.equal(typeof cached[0].metrics.durationMs, 'number');
+});
+
+test('Gemini bypasses partial line cache so the model receives full-song context', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.5-flash',
+        maxParallelChunks: 1
+    } as any);
+
+    const sourceLines = [
+        'First line of the song',
+        'Second line carries the meaning',
+        'Final line resolves the story'
+    ];
+    const now = Date.now();
+    storageMap.set('spicy-lyric-translator:translation-cache', JSON.stringify({
+        [`vi:${sourceLines[0]}`]: { translation: 'Ban dich cu 1', timestamp: now, api: 'custom' },
+        [`vi:${sourceLines[2]}`]: { translation: 'Ban dich cu 3', timestamp: now, api: 'custom' }
+    }));
+
+    const calls: FetchCall[] = [];
+    (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        const body = JSON.parse(String(init?.body));
+        const prompt = String(body.contents?.[0]?.parts?.[0]?.text || '');
+        const markers = Array.from(prompt.matchAll(/(\[\[SLT_BATCH_[^\]]+_(\d+)\]\])/g));
+        const translated = markers.map((match: RegExpMatchArray) => `${match[1]}Ban dich moi ${match[2]}`).join('\n');
+        return jsonResponse({
+            candidates: [{ content: { parts: [{ text: translated }] } }]
+        });
+    };
+
+    const { translateLyrics } = require('../src/utils/translator') as {
+        translateLyrics: (lines: string[], targetLang: string, trackUri?: string, sourceLang?: string, skipTrackCache?: boolean) => Promise<any[]>;
+    };
+    const results = await translateLyrics(sourceLines, 'vi', undefined, 'en', true);
+
+    assert.equal(calls.length, 1);
+    const requestBody = JSON.parse(String(calls[0].init?.body));
+    const prompt = String(requestBody.contents[0].parts[0].text);
+    sourceLines.forEach(line => assert.equal(prompt.includes(line), true, `missing full-song source line: ${line}`));
+    assert.deepEqual(results.map(result => result.translatedText), ['Ban dich moi 0', 'Ban dich moi 1', 'Ban dich moi 2']);
+    assert.equal(results.every(result => result.source === 'api' && result.apiProvider === 'gemini'), true);
 });
 
 test('Gemini uses context-aware song lyrics prompt with strict marker rules', async () => {
