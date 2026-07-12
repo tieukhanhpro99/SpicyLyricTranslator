@@ -74,6 +74,18 @@ let visibilityChangeListener: (() => void) | null = null;
 let beforeUnloadListener: (() => void) | null = null;
 
 let containerElement: HTMLElement | null = null;
+let indicatorHidden = false;
+
+function applyIndicatorVisibility(): void {
+    if (containerElement) {
+        containerElement.style.display = indicatorHidden ? 'none' : '';
+    }
+}
+
+export function setConnectionIndicatorHidden(hidden: boolean): void {
+    indicatorHidden = hidden;
+    applyIndicatorVisibility();
+}
 
 function getLatencyClass(latencyMs: number): string {
     if (latencyMs <= LATENCY_THRESHOLDS.GREAT) return 'slt-ci-great';
@@ -123,7 +135,9 @@ function createIndicatorElement(): HTMLElement {
 
 function updateUI(): void {
     if (!containerElement) return;
-    
+
+    applyIndicatorVisibility();
+
     const button = containerElement.querySelector('.slt-ci-button');
     const dot = containerElement.querySelector('.slt-ci-dot');
     const pingEl = containerElement.querySelector('.slt-ci-ping');
@@ -395,13 +409,17 @@ function waitForElement(selector: string, timeout: number = 10000): Promise<Elem
 }
 
 async function appendToDOM(): Promise<boolean> {
-    if (containerElement && containerElement.parentNode) return true;
+    if (containerElement && containerElement.parentNode) {
+        applyIndicatorVisibility();
+        return true;
+    }
 
     const container = getIndicatorContainer();
-    
+
     if (container) {
         containerElement = createIndicatorElement();
         container.insertBefore(containerElement, container.firstChild);
+        applyIndicatorVisibility();
         return true;
     }
 
@@ -409,9 +427,10 @@ async function appendToDOM(): Promise<boolean> {
     if (topBarContentRight) {
         containerElement = createIndicatorElement();
         topBarContentRight.insertBefore(containerElement, topBarContentRight.firstChild);
+        applyIndicatorVisibility();
         return true;
     }
-    
+
     return false;
 }
 

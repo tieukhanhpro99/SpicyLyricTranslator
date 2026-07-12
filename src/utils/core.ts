@@ -35,7 +35,7 @@ let observedLyricsContent: Element | null = null;
 let lastKnownRomanizationState: boolean | null = null;
 let lastTranslatedRomanizationState: boolean | null = null;
 let keyboardShortcutListener: ((e: KeyboardEvent) => void) | null = null;
-const SPICY_LYRICS_CACHE_NAME = 'SpicyLyrics_LyricsStore';
+const SPICY_LYRICS_CACHE_NAMES = ['SpicyLyrics_LyricsStore_g1', 'SpicyLyrics_LyricsStore'];
 const romanizationRepairAttempts = new Set<string>();
 
 let contentTranslation = new Map<string, string>();
@@ -639,8 +639,10 @@ async function deleteCurrentSpicyLyricsCacheEntry(trackUri: string): Promise<voi
     if (!trackId || typeof caches === 'undefined' || typeof caches.open !== 'function') return;
 
     try {
-        const cache = await caches.open(SPICY_LYRICS_CACHE_NAME);
-        await cache.delete(`/${trackId}`);
+        await Promise.all(SPICY_LYRICS_CACHE_NAMES.map(async name => {
+            const cache = await caches.open(name);
+            await cache.delete(`/${trackId}`);
+        }));
     } catch (e) {
         warn('Failed to delete current Spicy Lyrics cache entry:', e);
     }

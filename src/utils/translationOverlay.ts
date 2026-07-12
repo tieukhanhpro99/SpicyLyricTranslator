@@ -545,11 +545,10 @@ function applyReplaceMode(doc: Document): void {
         const timingInfo = lineTimingData[lineIndex];
         const isBreak = !originalText.trim() || /^[\s\-\u2022\u2013\u2014\u266A\u266B]+$/.test(originalText.trim());
         const hasRomanization = !!romanizationMap.get(lineIndex);
-        const hasApiOriginal = !!originalTextMap.get(lineIndex);
         const domIsRomanized = domLineIsRomanized(line, lineIndex);
         const learningActive = learningMode && hasRomanization && !(timingInfo?.isInstrumental || isBreak);
-        const showInjectedOriginal = learningActive && domIsRomanized && hasApiOriginal;
-        const keepDomVisible = learningActive && !domIsRomanized;
+        const showInjectedOriginal = false;
+        const keepDomVisible = learningActive;
         const isInstrumental = timingInfo?.isInstrumental || isBreak;
 
         let pairBelowText = originalText;
@@ -1339,10 +1338,9 @@ function applyInterleavedMode(doc: Document): void {
                 }
 
                 const hasRomanization = !!romanizationMap.get(lineIndex);
-                const hasApiOriginal = !!originalTextMap.get(lineIndex);
                 const domIsRomanized = domLineIsRomanized(line, lineIndex);
                 const learningActive = learningMode && hasRomanization && !isBreak;
-                const showInjectedOriginal = learningActive && domIsRomanized && hasApiOriginal;
+                const showInjectedOriginal = false;
                 const timingInfo = lineTimingData[lineIndex];
 
                 let pairBelowText = originalText;

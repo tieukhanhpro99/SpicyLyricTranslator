@@ -4,6 +4,8 @@ import {
     clearOverlayContent,
     disableOverlay,
     enableOverlay,
+    setOriginalTextData,
+    setRomanizationData,
     setTranslationContentData,
     updateOverlayContent
 } from '../src/utils/translationOverlay';
@@ -171,6 +173,48 @@ test('romanized visible lyrics render index translations when content lookup mis
 
     assert.equal(fakeDocument.parent.inserted.length, 1);
     assert.equal(fakeDocument.parent.inserted[0].textContent, 'Mu\u1ed1n m\u00e3i \u0111ung \u0111\u01b0a th\u1ebf n\u00e0y th\u00f4i');
+
+    disableOverlay();
+});
+
+test('vocabulary mode keeps native romanized lyrics visible after translation renders', () => {
+    const romanized = 'koi no hajimari mo yume no tsuzuki mo';
+    const original = '\u604b\u306e\u59cb\u307e\u308a\u3082 \u5922\u306e\u7d9a\u304d\u3082';
+    const line = new FakeElement(romanized, ['line']);
+    line.dataset.index = '0';
+    const fakeDocument = new FakeDocument(line);
+
+    (globalThis as any).document = fakeDocument;
+    (globalThis as any).window = {};
+    (globalThis as any).MutationObserver = class {
+        observe(): void {}
+        disconnect(): void {}
+    };
+    let pendingFrame: FrameRequestCallback | null = null;
+    (globalThis as any).requestAnimationFrame = (callback: FrameRequestCallback) => {
+        pendingFrame = callback;
+        return 1;
+    };
+    (globalThis as any).cancelAnimationFrame = () => {};
+    (globalThis as any).localStorage = {
+        getItem: (key: string) => key === 'spicy-lyric-translator:vocabulary-mode' ? 'true' : null,
+        setItem: () => {},
+        removeItem: () => {},
+        key: () => null,
+        length: 0
+    };
+
+    clearOverlayContent();
+    setRomanizationData(new Map([[0, romanized]]));
+    setOriginalTextData(new Map([[0, original]]));
+    enableOverlay({ mode: 'interleaved', syncWordHighlight: false });
+    updateOverlayContent(new Map([[0, 'T\u00ecnh y\u00eau b\u1eaft \u0111\u1ea7u, gi\u1ea5c m\u01a1 ti\u1ebfp n\u1ed1i']]));
+    const renderFrame = pendingFrame as FrameRequestCallback | null;
+    pendingFrame = null;
+    renderFrame?.(0);
+
+    assert.equal(line.classList.contains('slt-learning-hidden'), false);
+    assert.equal(fakeDocument.parent.inserted.some(el => el.classList.contains('slt-original-line')), false);
 
     disableOverlay();
 });
