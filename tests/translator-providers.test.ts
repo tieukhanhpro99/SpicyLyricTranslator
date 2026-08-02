@@ -976,7 +976,7 @@ test('Gemini splits large songs into parallel chunks instead of one slow batch',
     assert.deepEqual([...seenSources].sort(), [...sourceLines].sort());
 });
 
-test('maxParallelChunks=1 keeps Gemini on a single sequential batch', async () => {
+test('maxParallelChunks=1 keeps a long Gemini song on one complete sequential batch', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {
         geminiApiKey: 'gemini-key',
@@ -985,7 +985,7 @@ test('maxParallelChunks=1 keeps Gemini on a single sequential batch', async () =
         maxParallelChunks: '1'
     } as any);
 
-    const sourceLines = Array.from({ length: 16 }, (_, i) => `строка${'я'.repeat(i + 1)}`);
+    const sourceLines = Array.from({ length: 72 }, (_, i) => `строка${'я'.repeat(i + 1)}`);
     const translationMap = new Map(sourceLines.map((line, i) => [line, `Translated line ${i}`]));
     const expected = sourceLines.map((_, i) => `Translated line ${i}`);
 
@@ -1100,6 +1100,58 @@ test('mixed-language songs translate each language group with parallel chunks', 
 
     assert.equal(calls.length, 3);
     assert.deepEqual(result.map(item => item.translatedText), expected);
+});
+
+test('mixed Japanese, English, and Vietnamese lyrics keep every translated short line', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.1-flash-lite',
+        maxParallelChunks: '1'
+    } as any);
+
+    const sourceLines = [
+        '心の中で君を待っている',
+        'I keep walking through the rain and calling out your name',
+        'Get down',
+        'Yêu em'
+    ];
+    const expected = [
+        'Trong tim anh vẫn chờ em',
+        'Anh bước mãi dưới mưa và gọi tên em',
+        'Hạ xuống',
+        'Yêu em'
+    ];
+    const translations = new Map(sourceLines.map((line, index) => [line, expected[index]]));
+
+    (globalThis as any).fetch = async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        const prompt: string = body.contents[0].parts[0].text;
+        const markedLines = prompt.split('\n').filter(line => line.includes('[[SLT_BATCH_'));
+
+        if (markedLines.length > 0) {
+            const translated = markedLines.map(line => {
+                const marker = line.match(/\[\[SLT_BATCH_[^\]]*\]\]/)?.[0] || '';
+                const source = line.replace(marker, '');
+                return `${marker}${translations.get(source) || source}`;
+            });
+            return jsonResponse({ candidates: [{ content: { parts: [{ text: translated.join('\n') }] } }] });
+        }
+
+        const source = sourceLines.find(line => prompt.endsWith(line));
+        return jsonResponse({
+            candidates: [{ content: { parts: [{ text: source ? translations.get(source) : '' }] } }]
+        });
+    };
+
+    const { translateLyrics } = require('../src/utils/translator') as {
+        translateLyrics: (lines: string[], targetLang: string) => Promise<any[]>;
+    };
+    const results = await translateLyrics(sourceLines, 'vi');
+
+    assert.deepEqual(results.map(item => item.translatedText), expected);
+    assert.equal(results[2].wasTranslated, true, 'short English line must not be reverted to its source text');
+    assert.equal(results[3].wasTranslated, false, 'line already in Vietnamese must be passed through');
 });
 
 test('mostly-English song with stray non-Latin lines does not show EN->EN passthrough lines', async () => {

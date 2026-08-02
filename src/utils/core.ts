@@ -14,6 +14,7 @@ import {
     setQualityMetadata,
     setTranslationContentData,
     setRomanizationContentData,
+    setRomanizationDisplayEnabled,
     setOriginalContentData,
     setQualityContentData,
     setTimingContentData
@@ -22,6 +23,7 @@ import { shouldSkipTranslation, detectLanguageHeuristic, detectRomanizedJapanese
 import { openSettingsModal } from './settings';
 import { warn, error } from './debug';
 import { fetchLyricsFromAPI, fetchLyricsForTrackUri, clearLyricsCache, LyricLineData } from './lyricsFetcher';
+import { improveJapaneseRomanization } from './japaneseRomanization';
 
 let viewControlsObserver: MutationObserver | null = null;
 let lyricsObserver: MutationObserver | null = null;
@@ -528,14 +530,17 @@ function parseNonNegativeIndex(value: string | null | undefined): number | null 
 
 function getLyricElementIndex(line: Element, fallbackIndex: number): number {
     const ownDataset = (line as HTMLElement).dataset;
-    const ownIndex = parseNonNegativeIndex(ownDataset?.sltIndex || ownDataset?.lineIndex);
-    if (ownIndex !== null) return ownIndex;
+    const nativeLineIndex = parseNonNegativeIndex(ownDataset?.lineIndex);
+    if (nativeLineIndex !== null) return nativeLineIndex;
 
     const wrapper = typeof line.closest === 'function'
         ? line.closest('[data-index]') as HTMLElement | null
         : null;
     const wrapperIndex = parseNonNegativeIndex(wrapper?.dataset.index);
-    return wrapperIndex ?? fallbackIndex;
+    if (wrapperIndex !== null) return wrapperIndex;
+
+    const translatorIndex = parseNonNegativeIndex(ownDataset?.sltIndex);
+    return translatorIndex ?? fallbackIndex;
 }
 
 function hasVirtualizedLineIndexes(lines: NodeListOf<Element> | Element[]): boolean {
@@ -577,12 +582,20 @@ function hasOriginalScript(lines: string[] | null | undefined): boolean {
 
 export function needsRomanizationCacheRepair(lines: string[] | null | undefined, lineData: LyricLineData[] | null | undefined): boolean {
     if (!hasOriginalScript(lines)) return false;
-    return !Boolean(lineData?.some(line => {
+
+    const vocalLines = (lineData || []).filter(line =>
+        !line.isInstrumental &&
+        line.text.trim().length > 0 &&
+        hasOriginalScript([line.text])
+    );
+    if (vocalLines.length === 0) return true;
+
+    return vocalLines.some(line => {
         const romanized = line.romanizedText?.trim();
-        if (!romanized) return false;
-        if (normalizeMatchKey(romanized) === normalizeMatchKey(line.text)) return false;
-        return !hasOriginalScript([romanized]);
-    }));
+        if (!romanized) return true;
+        if (normalizeMatchKey(romanized) === normalizeMatchKey(line.text)) return true;
+        return hasOriginalScript([romanized]);
+    });
 }
 
 export function resolveTranslationSourceLines(input: TranslationSourceSelectionInput): TranslationSourceSelection {
@@ -693,7 +706,7 @@ export async function waitForLyricsAndTranslate(retries: number = 10, delay: num
     const staleLineRetryLimit = Math.max(3, Math.floor(retries / 3));
 
     for (let i = 0; i < retries; i++) {
-        if (!isSpicyLyricsOpen() || state.isTranslating) return;
+        if (!state.isEnabled || !isSpicyLyricsOpen() || state.isTranslating) return;
 
         const lines = getLyricsLines();
         if (lines.length > 0) {
@@ -714,10 +727,11 @@ export async function waitForLyricsAndTranslate(retries: number = 10, delay: num
 }
 
 export async function translateCurrentLyrics(): Promise<void> {
-    if (state.isTranslating) return;
+    if (!state.isEnabled || state.isTranslating) return;
 
     const currentTrackUri = getCurrentTrackUri();
     const currentRomanization = isRomanizationActive();
+    setRomanizationDisplayEnabled(currentRomanization);
     const romanizationChanged = lastTranslatedRomanizationState !== null && currentRomanization !== lastTranslatedRomanizationState;
 
     if (currentTrackUri && currentTrackUri === state.lastTranslatedSongUri && state.translatedLyrics.size > 0 && !romanizationChanged) {
@@ -815,6 +829,9 @@ export async function translateCurrentLyrics(): Promise<void> {
         try {
             const apiResult = await fetchLyricsFromAPI();
             if (apiResult && apiResult.lines.length > 0) {
+                if (romanizationOn) {
+                    await improveJapaneseRomanization(apiResult.lineData, apiResult.language);
+                }
                 apiLineTexts = apiResult.lines;
                 apiLanguage = apiResult.language;
                 apiLineData = apiResult.lineData;
@@ -1061,6 +1078,10 @@ export async function translateCurrentLyrics(): Promise<void> {
             }
         } else {
             translations = await translateLyrics(lineTexts, state.targetLanguage, currentTrackUri || undefined, state.detectedLanguage || undefined);
+        }
+
+        if (!state.isEnabled) {
+            return;
         }
 
         if (currentTrackUri && getCurrentTrackUri() !== currentTrackUri) {
@@ -1370,12 +1391,14 @@ function applyTranslations(lines: NodeListOf<Element>): void {
     const translationMapByIndex = new Map<number, string>();
     lines.forEach((line, index) => {
         const lineIndex = getLyricElementIndex(line, index);
-        let translatedText = state._translationsByIndex?.get(lineIndex);
+        const originalText = extractLineText(line);
+        let translatedText = lookupWithFallback(contentTranslation, originalText);
         if (!translatedText) {
-            const originalText = extractLineText(line);
+            translatedText = state._translationsByIndex?.get(lineIndex);
+        }
+        if (!translatedText) {
             translatedText = state.translatedLyrics.get(originalText);
         }
-        const originalText = extractLineText(line);
         if (!translatedText) return;
         if (translatedText === originalText) return;
         if (normalizeForComparison(translatedText) === normalizeForComparison(originalText)) return;
@@ -1523,6 +1546,14 @@ export function reapplyTranslations(): void {
 
 export function removeTranslations(): void {
     clearReapplyTimers();
+    if (translateDebounceTimer) {
+        clearTimeout(translateDebounceTimer);
+        translateDebounceTimer = null;
+    }
+    if (rerenderDebounceTimer) {
+        clearTimeout(rerenderDebounceTimer);
+        rerenderDebounceTimer = null;
+    }
     if (isOverlayActive()) disableOverlay();
 
     contentTranslation = new Map();
@@ -1595,14 +1626,39 @@ export function setupLyricsObserver(): void {
             return el.classList?.contains('line') || Boolean(el.querySelector?.('.line'));
         };
 
+        const isTranslatorOwnedMutation = (mutation: MutationRecord): boolean => {
+            const target = mutation.target.nodeType === Node.ELEMENT_NODE
+                ? mutation.target as Element
+                : mutation.target.parentElement;
+            return Boolean(target?.closest?.(
+                '.slt-replace-line, .slt-interleaved-translation, .slt-romanization-line, .slt-original-line'
+            ));
+        };
+
+        const mutationTouchesLyricLine = (mutation: MutationRecord): boolean => {
+            if (isTranslatorOwnedMutation(mutation)) return false;
+
+            const target = mutation.target.nodeType === Node.ELEMENT_NODE
+                ? mutation.target as Element
+                : mutation.target.parentElement;
+
+            if (mutation.type === 'attributes') {
+                return mutation.attributeName === 'data-index' || mutation.attributeName === 'data-line-index';
+            }
+            if (mutation.type === 'characterData') {
+                return Boolean(target?.closest?.('.line'));
+            }
+            if (mutation.type !== 'childList') return false;
+
+            return Boolean(target?.closest?.('.line')) ||
+                Array.from(mutation.addedNodes).some(hasLyricLineNode) ||
+                Array.from(mutation.removedNodes).some(hasLyricLineNode);
+        };
+
         lyricsObserver = new MutationObserver((mutations) => {
             if (!state.isEnabled || state.isTranslating) return;
 
-            const hasNewContent = mutations.some(m =>
-                m.type === 'childList' &&
-                m.addedNodes.length > 0 &&
-                Array.from(m.addedNodes).some(hasLyricLineNode)
-            );
+            const hasNewContent = mutations.some(mutationTouchesLyricLine);
 
             if (!hasNewContent || state.isTranslating) return;
 
@@ -1612,7 +1668,7 @@ export function setupLyricsObserver(): void {
                 if (rerenderDebounceTimer) clearTimeout(rerenderDebounceTimer);
                 rerenderDebounceTimer = setTimeout(() => {
                     rerenderDebounceTimer = null;
-                    if (state.isTranslating) return;
+                    if (!state.isEnabled || state.isTranslating) return;
                     const lines = getLyricsLines();
                     if (lines.length > 0) applyTranslations(lines);
                     void fillVisibleGaps();
@@ -1635,7 +1691,10 @@ export function setupLyricsObserver(): void {
 
         lyricsObserver.observe(lyricsContent, {
             childList: true,
-            subtree: true
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['data-index', 'data-line-index'],
+            characterData: true
         });
     } catch (e) {
         warn('Failed to setup Lyrics observer:', e);

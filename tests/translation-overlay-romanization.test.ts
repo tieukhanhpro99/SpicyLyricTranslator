@@ -6,6 +6,7 @@ import {
     enableOverlay,
     setOriginalTextData,
     setRomanizationData,
+    setRomanizationDisplayEnabled,
     setTranslationContentData,
     updateOverlayContent
 } from '../src/utils/translationOverlay';
@@ -54,6 +55,7 @@ class FakeStyle {
 }
 
 class FakeElement {
+    nodeType = 1;
     textContent: string | null;
     className = '';
     classList: FakeClassList;
@@ -77,6 +79,10 @@ class FakeElement {
     }
 
     querySelector(): FakeElement | null {
+        return null;
+    }
+
+    getAttribute(): string | null {
         return null;
     }
 
@@ -106,6 +112,7 @@ class FakeParent {
 
 class FakeDocument {
     body = new FakeElement('', []);
+    container = new FakeElement('', ['SpicyLyricsScrollContainer']);
     parent = new FakeParent();
     line: FakeElement;
 
@@ -118,6 +125,7 @@ class FakeDocument {
 
     querySelector(selector: string): any {
         if (selector === '.spicy-pip-wrapper') return null;
+        if (selector.includes('.SpicyLyricsScrollContainer')) return this.container;
         if (selector === '.slt-replace-line') return this.parent.inserted.find(el => el.classList.contains('slt-replace-line')) || null;
         if (selector === '.slt-interleaved-translation') return this.parent.inserted.find(el => el.classList.contains('slt-interleaved-translation')) || null;
         return null;
@@ -253,5 +261,104 @@ test('same-signature lyric rerender recreates missing translation elements after
 
     assert.equal(fakeDocument.parent.inserted.length, 1);
 
+    disableOverlay();
+});
+
+test('virtualized lyric nodes prefer the latest Spicy Lyrics index and rerender on recycle', () => {
+    const line = new FakeElement('\u6700\u521d\u306e\u884c', ['line']);
+    line.dataset.index = '0';
+    const fakeDocument = new FakeDocument(line);
+    let observerCallback: ((mutations: MutationRecord[]) => void) | null = null;
+    const frames: FrameRequestCallback[] = [];
+
+    (globalThis as any).document = fakeDocument;
+    (globalThis as any).window = {};
+    (globalThis as any).MutationObserver = class {
+        constructor(callback: (mutations: MutationRecord[]) => void) {
+            observerCallback = callback;
+        }
+        observe(): void {}
+        disconnect(): void {}
+    };
+    (globalThis as any).requestAnimationFrame = (callback: FrameRequestCallback) => {
+        frames.push(callback);
+        return frames.length;
+    };
+    (globalThis as any).cancelAnimationFrame = () => {};
+    (globalThis as any).localStorage = {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+        key: () => null,
+        length: 0
+    };
+
+    clearOverlayContent();
+    setTranslationContentData(new Map([
+        ['\u6700\u521d\u306e\u884c', 'D\u00f2ng \u0111\u1ea7u'],
+        ['\u6700\u5f8c\u306e\u884c', 'D\u00f2ng cu\u1ed1i']
+    ]));
+    enableOverlay({ mode: 'replace', syncWordHighlight: false });
+    updateOverlayContent(new Map([[0, 'D\u00f2ng \u0111\u1ea7u']]));
+
+    assert.equal(line.dataset.sltIndex, '0');
+    assert.equal(fakeDocument.parent.inserted.at(-1)?.textContent, 'D\u00f2ng \u0111\u1ea7u');
+
+    line.dataset.index = '42';
+    line.textContent = '\u6700\u5f8c\u306e\u884c';
+    line.classList.remove('slt-replace-hidden');
+    fakeDocument.parent.inserted = [];
+
+    const frameCountBeforeRecycle = frames.length;
+    assert.notEqual(observerCallback, null);
+    observerCallback!([{
+        type: 'attributes',
+        target: line,
+        attributeName: 'data-index'
+    } as unknown as MutationRecord]);
+    assert.equal(frames.length, frameCountBeforeRecycle + 1);
+    frames[frameCountBeforeRecycle](0);
+
+    assert.equal(line.dataset.sltIndex, '42');
+    assert.equal(fakeDocument.parent.inserted.at(-1)?.dataset.lineIndex, '42');
+    assert.equal(fakeDocument.parent.inserted.at(-1)?.textContent, 'D\u00f2ng cu\u1ed1i');
+
+    disableOverlay();
+});
+
+test('completed local romanization replaces residual Japanese text while romanization is enabled', () => {
+    const original = '\u541b\u306f\u4e16\u754c';
+    const line = new FakeElement('kimi wa \u4e16\u754c', ['line']);
+    line.dataset.index = '0';
+    const fakeDocument = new FakeDocument(line);
+
+    (globalThis as any).document = fakeDocument;
+    (globalThis as any).window = {};
+    (globalThis as any).MutationObserver = class {
+        observe(): void {}
+        disconnect(): void {}
+    };
+    (globalThis as any).requestAnimationFrame = () => 1;
+    (globalThis as any).cancelAnimationFrame = () => {};
+    (globalThis as any).localStorage = {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+        key: () => null,
+        length: 0
+    };
+
+    clearOverlayContent();
+    setRomanizationDisplayEnabled(true);
+    setRomanizationData(new Map([[0, 'kimi wa sekai']]));
+    setOriginalTextData(new Map([[0, original]]));
+    enableOverlay({ mode: 'interleaved', syncWordHighlight: false });
+    updateOverlayContent(new Map([[0, 'Em l\u00e0 th\u1ebf gi\u1edbi']]));
+
+    const romanization = fakeDocument.parent.inserted.find(el => el.className.includes('slt-romanization-line'));
+    assert.equal(romanization?.textContent, 'kimi wa sekai');
+    assert.equal(line.classList.contains('slt-learning-hidden'), true);
+
+    setRomanizationDisplayEnabled(false);
     disableOverlay();
 });

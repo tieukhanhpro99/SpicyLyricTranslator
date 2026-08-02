@@ -7,6 +7,7 @@ import { injectStyles } from '../styles/main';
 import { registerSettings } from './settings';
 import { initConnectionIndicator, cleanupConnectionIndicator, getConnectionState, refreshConnection, setConnectionIndicatorHidden } from './connectivity';
 import { startUpdateChecker, stopUpdateChecker, checkForUpdates, getUpdateInfo, VERSION, showPostUpdateChangelog } from './updater';
+import { shouldStartTranslationAfterSongChange } from './translationLifecycle';
 
 
 import { 
@@ -122,7 +123,8 @@ export async function initialize(): Promise<void> {
         const songChangeHandler = () => {
             const previousFirstLine = getLyricsFirstLineText();
             const previousTrackUri = lastPlayerTrackUri;
-            lastPlayerTrackUri = getCurrentTrackUri();
+            const currentTrackUri = getCurrentTrackUri();
+            lastPlayerTrackUri = currentTrackUri;
             setTimeout(() => {
                 lastPlayerTrackUri = getCurrentTrackUri();
             }, 1200);
@@ -135,7 +137,12 @@ export async function initialize(): Promise<void> {
             clearLyricsCache();
             removeTranslations();
             
-            if (state.isEnabled || state.autoTranslate) {
+            if (shouldStartTranslationAfterSongChange(
+                state.isEnabled,
+                state.autoTranslate,
+                previousTrackUri,
+                currentTrackUri
+            )) {
                 if (!state.isEnabled) {
                     state.isEnabled = true;
                     storage.set('translation-enabled', 'true');

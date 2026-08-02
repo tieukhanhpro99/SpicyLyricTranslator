@@ -199,6 +199,32 @@ test('detects script lyrics missing romanization data as repairable Spicy Lyrics
     );
 });
 
+test('detects partially romanized Japanese tracks as repairable', () => {
+    const lines = ['\u541b\u306f\u4e16\u754c', '\u611b\u3057\u3066\u308b'];
+
+    assert.equal(
+        needsRomanizationCacheRepair(
+            lines,
+            [
+                vocalLine(lines[0], 'kimi wa sekai'),
+                vocalLine(lines[1], 'ai \u3057\u3066\u308b')
+            ]
+        ),
+        true
+    );
+
+    assert.equal(
+        needsRomanizationCacheRepair(
+            lines,
+            [
+                vocalLine(lines[0], 'kimi wa sekai'),
+                vocalLine(lines[1], 'ai shiteru')
+            ]
+        ),
+        false
+    );
+});
+
 test('same-language skip notification only fires once for repeated lyric refreshes', async () => {
     const notifications: string[] = [];
     const lines = [
@@ -257,6 +283,26 @@ test('same-language skip notification only fires once for repeated lyric refresh
     await translateCurrentLyrics();
 
     assert.deepEqual(notifications, ['Lyrics already in EN']);
+});
+
+test('translation callbacks cannot restore lyrics after translation is disabled', async () => {
+    const lines = [fakeLine('君は世界')];
+    (globalThis as any).document = {
+        body: { classList: { contains: () => false } },
+        querySelector: () => null,
+        querySelectorAll: (selector: string) => selector.includes('.line') ? lines : []
+    };
+
+    state.isEnabled = false;
+    state.isTranslating = false;
+    state.lastTranslatedSongUri = null;
+    state.translatedLyrics.clear();
+
+    await translateCurrentLyrics();
+
+    assert.equal(state.isTranslating, false);
+    assert.equal(state.lastTranslatedSongUri, null);
+    assert.equal(state.translatedLyrics.size, 0);
 });
 
 function fakeLine(text: string): Element {

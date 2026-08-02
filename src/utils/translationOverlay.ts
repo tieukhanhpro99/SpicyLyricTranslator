@@ -2,6 +2,7 @@ import { warn } from './debug';
 import type { LyricLineData, WordTimingData } from './lyricsFetcher';
 import type { TranslationQualityMeta } from './state';
 import { storage } from './storage';
+import { containsJapaneseScript } from './japaneseRomanization';
 
 export type OverlayMode = 'replace' | 'interleaved';
 
@@ -20,6 +21,7 @@ let currentConfig: OverlayConfig = {
 };
 
 let isOverlayEnabled = false;
+let romanizationDisplayEnabled = false;
 let translationMap: Map<number, string> = new Map();
 let romanizationMap: Map<number, string> = new Map();
 let originalTextMap: Map<number, string> = new Map();
@@ -129,6 +131,12 @@ export function setRomanizationContentData(data: Map<string, string>): void {
     romanizationByContent = new Map(data);
 }
 
+export function setRomanizationDisplayEnabled(enabled: boolean): void {
+    if (romanizationDisplayEnabled === enabled) return;
+    romanizationDisplayEnabled = enabled;
+    lastRenderSigMap.delete(document);
+}
+
 export function setOriginalContentData(data: Map<string, string>): void {
     originalByContent = new Map(data);
 }
@@ -155,7 +163,7 @@ function computeRenderSignature(lines: ArrayLike<Element>): string {
         const tr = translationMap.get(lineIndex) || '';
         const rom = romanizationMap.get(lineIndex) || '';
         const orig = originalTextMap.get(lineIndex) || '';
-        parts.push(`${text}${tr}${rom}${orig}`);
+        parts.push(`${lineIndex}${text}${tr}${rom}${orig}`);
     }
     return parts.join('');
 }
@@ -308,6 +316,19 @@ function domLineIsRomanized(line: Element, index: number): boolean {
     return nDom !== nOrig && nRom.length > 0 && nDom.length > 0;
 }
 
+function shouldInjectCompletedRomanization(line: Element, index: number): boolean {
+    if (!romanizationDisplayEnabled) return false;
+
+    const original = originalTextMap.get(index);
+    const romanized = romanizationMap.get(index);
+    const domText = extractLineText(line);
+    if (!original || !romanized || !domText) return false;
+
+    return containsJapaneseScript(original) &&
+        containsJapaneseScript(domText) &&
+        !containsJapaneseScript(romanized);
+}
+
 function getPIPWindow(): Window | null {
     try {
         const docPiP = (globalThis as any).documentPictureInPicture;
@@ -358,14 +379,17 @@ function parseNonNegativeIndex(value: string | null | undefined): number | null 
 
 function getLineElementIndex(line: Element, fallbackIndex: number): number {
     const ownDataset = (line as HTMLElement).dataset;
-    const ownIndex = parseNonNegativeIndex(ownDataset?.sltIndex || ownDataset?.lineIndex);
-    if (ownIndex !== null) return ownIndex;
+    const nativeLineIndex = parseNonNegativeIndex(ownDataset?.lineIndex);
+    if (nativeLineIndex !== null) return nativeLineIndex;
 
     const wrapper = typeof line.closest === 'function'
         ? line.closest('[data-index]') as HTMLElement | null
         : null;
     const wrapperIndex = parseNonNegativeIndex(wrapper?.dataset.index);
-    return wrapperIndex ?? fallbackIndex;
+    if (wrapperIndex !== null) return wrapperIndex;
+
+    const translatorIndex = parseNonNegativeIndex(ownDataset?.sltIndex);
+    return translatorIndex ?? fallbackIndex;
 }
 
 function getLineByElementIndex(lines: NodeListOf<Element>, targetIndex: number): HTMLElement | null {
@@ -532,11 +556,14 @@ function applyReplaceMode(doc: Document): void {
         if (existing && !existing.classList.contains('slt-replace-line')) existing = null;
         let existingOrig = line.previousElementSibling as HTMLElement | null;
         if (existingOrig && !existingOrig.classList.contains('slt-original-line')) existingOrig = null;
+        let existingRoman = line.previousElementSibling as HTMLElement | null;
+        if (existingRoman && !existingRoman.classList.contains('slt-romanization-line')) existingRoman = null;
 
         const wants = !!translation && translation !== originalText && !!line.parentNode;
         if (!wants) {
             if (existing) existing.remove();
             if (existingOrig) existingOrig.remove();
+            if (existingRoman) existingRoman.remove();
             lineEl.classList.remove('slt-replace-hidden');
             lineEl.classList.remove('slt-learning-hidden');
             return;
@@ -548,6 +575,7 @@ function applyReplaceMode(doc: Document): void {
         const domIsRomanized = domLineIsRomanized(line, lineIndex);
         const learningActive = learningMode && hasRomanization && !(timingInfo?.isInstrumental || isBreak);
         const showInjectedOriginal = false;
+        const showCompletedRomanization = shouldInjectCompletedRomanization(line, lineIndex);
         const keepDomVisible = learningActive;
         const isInstrumental = timingInfo?.isInstrumental || isBreak;
 
@@ -563,6 +591,7 @@ function applyReplaceMode(doc: Document): void {
             isInstrumental ? 'I' : '',
             domIsRomanized ? 'R' : '',
             showInjectedOriginal ? 'O' : '',
+            showCompletedRomanization ? 'CR' : '',
             keepDomVisible ? 'K' : '',
             vocabEnabled ? 'V' : '',
             currentConfig.syncWordHighlight ? 'W' : '',
@@ -570,6 +599,7 @@ function applyReplaceMode(doc: Document): void {
         ].join('\u0001');
 
         lineEl.classList.toggle('slt-replace-hidden', !keepDomVisible);
+        lineEl.classList.toggle('slt-learning-hidden', showCompletedRomanization);
         lineEl.dataset.sltIndex = lineIndex.toString();
 
         const refreshOriginal = () => {
@@ -590,6 +620,25 @@ function applyReplaceMode(doc: Document): void {
             }
         };
 
+        const refreshRomanization = () => {
+            if (showCompletedRomanization) {
+                if (existingRoman) {
+                    existingRoman.dataset.lineIndex = lineIndex.toString();
+                    existingRoman.dataset.forLine = lineIndex.toString();
+                    existingRoman.textContent = romanizationMap.get(lineIndex) || '';
+                    claimed.add(existingRoman);
+                } else {
+                    const romanEl = buildRomanizationLine(doc, lineIndex, timingInfo, line);
+                    if (romanEl) {
+                        line.parentNode!.insertBefore(romanEl, line);
+                        claimed.add(romanEl);
+                    }
+                }
+            } else if (existingRoman) {
+                existingRoman.remove();
+            }
+        };
+
         if (existing && existing.dataset.sltSig === sig) {
             existing.dataset.lineIndex = lineIndex.toString();
             existing.dataset.forLine = lineIndex.toString();
@@ -599,11 +648,13 @@ function applyReplaceMode(doc: Document): void {
             }
             claimed.add(existing);
             refreshOriginal();
+            refreshRomanization();
             return;
         }
 
         if (existing) existing.remove();
         if (existingOrig) { existingOrig.remove(); existingOrig = null; }
+        if (existingRoman) { existingRoman.remove(); existingRoman = null; }
 
         const replaceEl = doc.createElement('div');
         replaceEl.className = 'slt-replace-line slt-sync-translation';
@@ -665,6 +716,7 @@ function applyReplaceMode(doc: Document): void {
         claimed.add(replaceEl);
 
         refreshOriginal();
+        refreshRomanization();
     });
 
     doc.querySelectorAll('.slt-replace-line, .slt-original-line, .slt-romanization-line').forEach(el => {
@@ -1327,11 +1379,14 @@ function applyInterleavedMode(doc: Document): void {
                 if (existing && !existing.classList.contains('slt-interleaved-translation')) existing = null;
                 let existingOrig = line.previousElementSibling as HTMLElement | null;
                 if (existingOrig && !existingOrig.classList.contains('slt-original-line')) existingOrig = null;
+                let existingRoman = line.previousElementSibling as HTMLElement | null;
+                if (existingRoman && !existingRoman.classList.contains('slt-romanization-line')) existingRoman = null;
 
                 const wants = (!!translation || isBreak) && translation !== originalText && !!line.parentNode;
                 if (!wants) {
                     if (existing) existing.remove();
                     if (existingOrig) existingOrig.remove();
+                    if (existingRoman) existingRoman.remove();
                     lineEl.classList.remove('slt-learning-hidden');
                     lineEl.classList.remove('slt-overlay-parent');
                     return;
@@ -1341,6 +1396,7 @@ function applyInterleavedMode(doc: Document): void {
                 const domIsRomanized = domLineIsRomanized(line, lineIndex);
                 const learningActive = learningMode && hasRomanization && !isBreak;
                 const showInjectedOriginal = false;
+                const showCompletedRomanization = shouldInjectCompletedRomanization(line, lineIndex);
                 const timingInfo = lineTimingData[lineIndex];
 
                 let pairBelowText = originalText;
@@ -1357,12 +1413,13 @@ function applyInterleavedMode(doc: Document): void {
                     currentConfig.syncWordHighlight ? 'W' : '',
                     domIsRomanized ? 'R' : '',
                     showInjectedOriginal ? 'O' : '',
+                    showCompletedRomanization ? 'CR' : '',
                     pairBelowText
                 ].join('\u0001');
 
                 lineEl.classList.add('slt-overlay-parent');
                 lineEl.dataset.sltIndex = lineIndex.toString();
-                lineEl.classList.toggle('slt-learning-hidden', showInjectedOriginal);
+                lineEl.classList.toggle('slt-learning-hidden', showInjectedOriginal || showCompletedRomanization);
 
                 const refreshOriginal = () => {
                     if (showInjectedOriginal) {
@@ -1382,6 +1439,25 @@ function applyInterleavedMode(doc: Document): void {
                     }
                 };
 
+                const refreshRomanization = () => {
+                    if (showCompletedRomanization) {
+                        if (existingRoman) {
+                            existingRoman.dataset.lineIndex = lineIndex.toString();
+                            existingRoman.dataset.forLine = lineIndex.toString();
+                            existingRoman.textContent = romanizationMap.get(lineIndex) || '';
+                            claimed.add(existingRoman);
+                        } else {
+                            const romanEl = buildRomanizationLine(doc, lineIndex, timingInfo, line);
+                            if (romanEl) {
+                                line.parentNode!.insertBefore(romanEl, line);
+                                claimed.add(romanEl);
+                            }
+                        }
+                    } else if (existingRoman) {
+                        existingRoman.remove();
+                    }
+                };
+
                 if (existing && existing.dataset.sltSig === sig) {
                     existing.dataset.lineIndex = lineIndex.toString();
                     existing.dataset.forLine = lineIndex.toString();
@@ -1391,11 +1467,13 @@ function applyInterleavedMode(doc: Document): void {
                     }
                     claimed.add(existing);
                     refreshOriginal();
+                    refreshRomanization();
                     return;
                 }
 
                 if (existing) existing.remove();
                 if (existingOrig) { existingOrig.remove(); existingOrig = null; }
+                if (existingRoman) { existingRoman.remove(); existingRoman = null; }
 
                 const translationEl = doc.createElement('div');
                 translationEl.className = 'slt-interleaved-translation';
@@ -1435,6 +1513,7 @@ function applyInterleavedMode(doc: Document): void {
                 claimed.add(translationEl);
 
                 refreshOriginal();
+                refreshRomanization();
 
                 if (!isBreak && currentConfig.syncWordHighlight && translation) {
                     fallbackToContinuousMultilineGradient(translationEl, translation, line);
@@ -1916,8 +1995,69 @@ function onActiveLineChanged(doc: Document): void {
     } catch (err) { }
 }
 const activeLineObservers = new Map<Document, MutationObserver>();
+const overlayRenderFrames = new Map<Document, number>();
 let activeSyncIntervalId: ReturnType<typeof setInterval> | null = null;
 let activeSyncRafId: number | null = null;
+
+function isTranslatorOverlayElement(node: Node | null): boolean {
+    if (!node || node.nodeType !== 1) return false;
+    const el = node as Element;
+    return el.classList.contains('slt-replace-line') ||
+        el.classList.contains('slt-interleaved-translation') ||
+        el.classList.contains('slt-romanization-line') ||
+        el.classList.contains('slt-original-line') ||
+        Boolean(el.closest?.('.slt-replace-line, .slt-interleaved-translation, .slt-romanization-line, .slt-original-line'));
+}
+
+function nodeContainsLyricLine(node: Node): boolean {
+    if (node.nodeType !== 1) return false;
+    const el = node as Element;
+    return el.classList.contains('line') || Boolean(el.querySelector?.('.line'));
+}
+
+function mutationNeedsOverlayRerender(mutation: MutationRecord): boolean {
+    const targetElement = mutation.target.nodeType === 1
+        ? mutation.target as Element
+        : mutation.target.parentElement;
+    if (isTranslatorOverlayElement(targetElement)) return false;
+
+    if (mutation.type === 'attributes') {
+        if (mutation.attributeName !== 'data-index' && mutation.attributeName !== 'data-line-index') {
+            return false;
+        }
+        return Boolean(
+            targetElement?.classList.contains('line') ||
+            targetElement?.querySelector?.('.line') ||
+            targetElement?.closest?.('[data-index]')
+        );
+    }
+
+    if (mutation.type === 'characterData') {
+        return Boolean(targetElement?.closest?.('.line'));
+    }
+
+    if (mutation.type !== 'childList') return false;
+
+    const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+    const meaningfulNodes = changedNodes.filter(node => !isTranslatorOverlayElement(node));
+    if (meaningfulNodes.length === 0) return false;
+
+    if (targetElement?.closest?.('.line')) return true;
+    return meaningfulNodes.some(nodeContainsLyricLine);
+}
+
+function scheduleOverlayRerender(doc: Document): void {
+    if (overlayRenderFrames.has(doc)) return;
+
+    const frame = requestAnimationFrame(() => {
+        overlayRenderFrames.delete(doc);
+        if (!isOverlayEnabled || !isDocumentValid(doc)) return;
+        resetDocCache(doc);
+        lastRenderSigMap.delete(doc);
+        renderTranslations(doc);
+    });
+    overlayRenderFrames.set(doc, frame);
+}
 
 function syncLoop(): void {
     if (!isOverlayEnabled) {
@@ -2016,6 +2156,7 @@ function setupActiveLineObserver(doc: Document): void {
             try {
                 let activeChanged = false;
                 let structureChanged = false;
+                let overlayContentChanged = false;
 
                 for (const mutation of mutations) {
                     if (mutation.type === 'childList') {
@@ -2027,10 +2168,17 @@ function setupActiveLineObserver(doc: Document): void {
                             activeChanged = true;
                         }
                     }
+                    if (mutationNeedsOverlayRerender(mutation)) {
+                        overlayContentChanged = true;
+                    }
                 }
 
                 if (structureChanged) {
                     resetDocCache(doc);
+                }
+
+                if (overlayContentChanged) {
+                    scheduleOverlayRerender(doc);
                 }
 
                 if (activeChanged) {
@@ -2041,9 +2189,10 @@ function setupActiveLineObserver(doc: Document): void {
 
         observer.observe(lyricsContainer, {
             attributes: true,
-            attributeFilter: ['class', 'data-active', 'style'],
+            attributeFilter: ['class', 'data-active', 'style', 'data-index', 'data-line-index'],
             subtree: true,
-            childList: true
+            childList: true,
+            characterData: true
         });
 
         activeLineObservers.set(doc, observer);
@@ -2101,6 +2250,8 @@ export function disableOverlay(): void {
         observer.disconnect();
     });
     activeLineObservers.clear();
+    overlayRenderFrames.forEach(frame => cancelAnimationFrame(frame));
+    overlayRenderFrames.clear();
 
     const cleanup = (doc: Document) => {
         lastRenderSigMap.delete(doc);

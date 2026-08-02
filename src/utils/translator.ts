@@ -292,6 +292,13 @@ function getConfidentLineLanguage(text: string): string | undefined {
     return detected && detected.confidence >= 0.6 ? detected.code : undefined;
 }
 
+function isConfidentTargetLanguageLine(text: string, targetLang: string): boolean {
+    const detected = getConfidentLineLanguage(text);
+    if (!detected || !isSameLanguage(detected, targetLang)) return false;
+    if (sourceHasNonLatinScript(text) && targetLangIsLatinScript(targetLang)) return false;
+    return true;
+}
+
 function getConfidentLineLanguages(lines: string[]): Set<string> {
     const languages = new Set<string>();
 
@@ -342,6 +349,7 @@ function shouldInvalidateTrackCacheForMixedContent(
 
     let suspiciousUnchanged = 0;
     let suspiciousDebris = 0;
+    const hasMixedSourceLanguages = getConfidentLineLanguages(sourceLines).size > 1;
 
     for (let i = 0; i < sourceLines.length; i++) {
         const sourceLine = normalizeSourceLineForFingerprint(sourceLines[i]);
@@ -360,7 +368,12 @@ function shouldInvalidateTrackCacheForMixedContent(
             continue;
         }
 
-        if (shouldInvalidateIdentityTranslation(sourceLines[i], targetLang)) {
+        const lexicalTokenCount = (sourceLines[i].match(/[\p{L}\p{N}]+/gu) || []).length;
+        const unresolvedMixedLine = hasMixedSourceLanguages &&
+            lexicalTokenCount >= 2 &&
+            !isConfidentTargetLanguageLine(sourceLines[i], targetLang);
+
+        if (shouldInvalidateIdentityTranslation(sourceLines[i], targetLang) || unresolvedMixedLine) {
             suspiciousUnchanged++;
         }
     }
@@ -2482,13 +2495,17 @@ async function translateLyricsInner(
             const initialTranslation = existing?.translatedText || item.text;
             let repairedTranslation = await repairMixedLineTranslation(item.text, initialTranslation, targetLang);
             let finalTranslation = normalizeTranslatedLine(repairedTranslation || '') || item.text;
-            const sourceAndTargetMatch = isSameLanguage(detectedLang, targetLang);
 
-            const sourceIsNonLatin = sourceHasNonLatinScript(item.text);
-            const targetWantsLatin = targetLangIsLatinScript(targetLang);
+            const sourceMatchesOutput = normalizeComparisonText(finalTranslation) === normalizeComparisonText(item.text);
+            const lineAlreadyInTarget = isConfidentTargetLanguageLine(item.text, targetLang);
+            const lexicalTokenCount = (item.text.match(/[\p{L}\p{N}]+/gu) || []).length;
+            const unresolvedMixedLine = hasMixedSourceLanguages && !lineAlreadyInTarget && lexicalTokenCount >= 2;
             const suspiciousOutput =
                 looksLikeMarkerDebris(finalTranslation) ||
-                (sourceIsNonLatin && targetWantsLatin && finalTranslation === item.text);
+                (sourceMatchesOutput && (
+                    shouldInvalidateIdentityTranslation(item.text, targetLang) ||
+                    unresolvedMixedLine
+                ));
 
             if (suspiciousOutput) {
                 try {
@@ -2505,8 +2522,7 @@ async function translateLyricsInner(
                 }
             }
 
-            const latinLineInMixedScriptTrack = targetWantsLatin && hasConfidentNonTargetLine && !sourceIsNonLatin;
-            if ((sourceAndTargetMatch || latinLineInMixedScriptTrack) && !hasMeaningfulTranslationDifference(item.text, finalTranslation, targetLang)) {
+            if (lineAlreadyInTarget) {
                 finalTranslation = item.text;
             }
 

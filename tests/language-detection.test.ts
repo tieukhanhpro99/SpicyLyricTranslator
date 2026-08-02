@@ -47,6 +47,27 @@ test('distinctive marker detection ignores Vietnamese diacritics', () => {
     assert.equal(detectByDistinctiveLatinMarkers('Đường về nhà em qua bao nhiêu con phố đông người'), null);
 });
 
+test('Vietnamese lyrics are detected locally and skipped when Vietnamese is the target', async () => {
+    const lyrics = [
+        'Đường về nhà em qua bao nhiêu con phố đông người',
+        'Mình từng yêu nhau như thế sao giờ chỉ còn nỗi nhớ',
+        'Ngày mai anh vẫn luôn chờ em nơi đây'
+    ];
+
+    const detected = detectLanguageHeuristic(lyrics.join(' '));
+    assert.equal(detected?.code, 'vi');
+    assert.equal((detected?.confidence || 0) >= 0.8, true);
+
+    const result = await shouldSkipTranslation(lyrics, 'vi', 'spotify:track:vietnamese-only');
+    assert.equal(result.skip, true);
+    assert.equal(result.detectedLanguage, 'vi');
+});
+
+test('short Vietnamese lines with distinctive words are detected as Vietnamese', () => {
+    assert.equal(detectLanguageHeuristic('Yêu em')?.code, 'vi');
+    assert.equal(detectLanguageHeuristic('Mãi nhớ anh')?.code, 'vi');
+});
+
 test('heavily elided French lines are detected as French, not skipped as unknown', () => {
     assert.equal(detectLanguageHeuristic("J'suis mort à l'intérieur")?.code, 'fr');
     assert.equal(detectLanguageHeuristic("J'connais plus qu'la douleur")?.code, 'fr');

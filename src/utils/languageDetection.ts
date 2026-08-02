@@ -20,6 +20,7 @@ const LANGUAGE_PATTERNS: { code: string; scripts: RegExp }[] = [
 ];
 
 const LATIN_LANGUAGE_WORDS: { code: string; words: string[] }[] = [
+    { code: 'vi', words: ['anh', 'em', 'tôi', 'ta', 'mình', 'chúng', 'là', 'và', 'của', 'có', 'không', 'trong', 'một', 'những', 'này', 'đó', 'đã', 'đang', 'sẽ', 'được', 'với', 'cho', 'khi', 'nhưng', 'vì', 'nếu', 'như', 'yêu', 'nhớ', 'thương', 'lòng', 'tim', 'đời', 'ngày', 'đêm', 'mãi', 'luôn', 'về', 'nơi', 'đây', 'đâu', 'rồi', 'còn', 'chỉ', 'lại', 'từng', 'bao', 'sao', 'người'] },
     { code: 'es', words: ['el', 'la', 'los', 'las', 'que', 'de', 'en', 'un', 'una', 'es', 'no', 'por', 'con', 'para', 'como', 'pero', 'más', 'yo', 'tu', 'mi', 'muy', 'hay', 'donde', 'cuando', 'siempre', 'nunca', 'todo', 'nada', 'sin', 'sobre', 'soy', 'estoy', 'tengo', 'aquí', 'porque', 'te', 'se', 'le', 'nos', 'ya', 'del', 'al'] },
     { code: 'fr', words: ['le', 'la', 'les', 'de', 'et', 'en', 'un', 'une', 'est', 'que', 'je', 'tu', 'il', 'elle', 'nous', 'vous', 'ne', 'pas', 'pour', 'avec', 'mais', 'aussi', 'très', 'mon', 'ton', 'son', 'mes', 'ses', 'sur', 'dans', 'qui', 'au', 'du', 'des', 'ce', 'cette', 'ça'] },
     { code: 'de', words: ['der', 'die', 'das', 'und', 'ist', 'ich', 'du', 'er', 'sie', 'wir', 'ihr', 'nicht', 'ein', 'eine', 'mit', 'auf', 'für', 'von', 'auch', 'noch', 'nur', 'sehr', 'wie', 'doch', 'dann', 'nein', 'ja', 'wenn', 'mein', 'dein', 'sein', 'kein'] },
@@ -57,7 +58,8 @@ const LANGUAGE_NAME_TO_CODE: Record<string, string> = {
     russian: 'ru',
     thai: 'th',
     hindi: 'hi',
-    greek: 'el'
+    greek: 'el',
+    vietnamese: 'vi'
 };
 
 const ENGLISH_EQUIVALENT_CODES = new Set(['pcm', 'sco', 'jam', 'cpe']);
@@ -238,11 +240,40 @@ const DISTINCTIVE_MARKER_SETS: { code: string; chars: Set<string> }[] = DISTINCT
     chars: new Set(entry.chars.split(''))
 }));
 
-const VIETNAMESE_MARKER_REGEX = /[ơướờởỡợứừửữự]/i;
+const VIETNAMESE_MARKER_REGEX = /[ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ]/i;
+const VIETNAMESE_BASE_MARKER_REGEX = /[ăâđêôơư]/gi;
+const VIETNAMESE_UNIQUE_MARKER_REGEX = /[ơư]/gi;
+const VIETNAMESE_TONE_MARKER_REGEX = /[àáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ]/gi;
+const VIETNAMESE_WORDS = new Set(
+    LATIN_LANGUAGE_WORDS.find(language => language.code === 'vi')?.words || []
+);
+
+function detectVietnamese(text: string): { code: string; confidence: number } | null {
+    if (!text || !VIETNAMESE_MARKER_REGEX.test(text)) return null;
+
+    const words = tokenizeWords(text);
+    if (words.length === 0) return null;
+
+    const commonWordCount = words.reduce(
+        (count, word) => count + (VIETNAMESE_WORDS.has(word) ? 1 : 0),
+        0
+    );
+    const baseMarkerCount = (text.match(VIETNAMESE_BASE_MARKER_REGEX) || []).length;
+    const uniqueMarkerCount = (text.match(VIETNAMESE_UNIQUE_MARKER_REGEX) || []).length;
+    const toneMarkerCount = (text.match(VIETNAMESE_TONE_MARKER_REGEX) || []).length;
+
+    if (uniqueMarkerCount >= 1 && commonWordCount >= 1) return { code: 'vi', confidence: 0.94 };
+    if (baseMarkerCount >= 2 && commonWordCount >= 2) return { code: 'vi', confidence: 0.92 };
+    if (baseMarkerCount >= 1 && commonWordCount >= 2) return { code: 'vi', confidence: 0.9 };
+    if (toneMarkerCount >= 2 && commonWordCount >= 2) return { code: 'vi', confidence: 0.86 };
+    if (toneMarkerCount >= 1 && commonWordCount >= 4) return { code: 'vi', confidence: 0.82 };
+
+    return null;
+}
 
 export function detectByDistinctiveLatinMarkers(text: string): { code: string; confidence: number } | null {
     if (!text) return null;
-    if (VIETNAMESE_MARKER_REGEX.test(text)) return null;
+    if (detectVietnamese(text)) return null;
 
     const lower = text.toLowerCase();
     const counts: Record<string, number> = {};
@@ -270,6 +301,11 @@ export function detectByDistinctiveLatinMarkers(text: string): { code: string; c
 
 export function detectLanguageHeuristic(text: string): { code: string; confidence: number } | null {
     if (!text) return null;
+
+    const vietnamese = detectVietnamese(text);
+    if (vietnamese) {
+        return vietnamese;
+    }
 
     const hasNonLatinScript = NON_LATIN_SCRIPT_DETECTION_REGEX.test(text);
     const minLength = hasNonLatinScript ? 1 : 10;
