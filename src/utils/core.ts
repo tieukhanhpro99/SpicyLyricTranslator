@@ -19,7 +19,7 @@ import {
     setQualityContentData,
     setTimingContentData
 } from './translationOverlay';
-import { shouldSkipTranslation, detectLanguageHeuristic, detectRomanizedJapanese, isSameLanguage } from './languageDetection';
+import { shouldSkipTranslation, detectLanguageHeuristic, detectRomanizedJapanese, isSameLanguage, refineChineseLanguageCode, isLikelyNonTargetLine } from './languageDetection';
 import { openSettingsModal } from './settings';
 import { warn, error } from './debug';
 import { fetchLyricsFromAPI, fetchLyricsForTrackUri, clearLyricsCache, LyricLineData } from './lyricsFetcher';
@@ -485,6 +485,9 @@ function getConfidentNonTargetLineIndexes(lines: string[], targetLanguage: strin
 
         const detected = detectLanguageHeuristic(trimmed);
         if (!detected) {
+            if (isLikelyNonTargetLine(trimmed, targetLanguage)) {
+                indexes.push(i);
+            }
             continue;
         }
 
@@ -976,6 +979,10 @@ export async function translateCurrentLyrics(): Promise<void> {
             return;
         }
         const sourceLyricsKey = buildLyricsKey(nonEmptyTexts);
+
+        if (apiLanguage) {
+            apiLanguage = refineChineseLanguageCode(apiLanguage, nonEmptyTexts);
+        }
 
         const detectedLang = apiLanguage || cachedSourceLanguage || state.detectedLanguage || undefined;
 
