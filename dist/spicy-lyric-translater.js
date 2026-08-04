@@ -190,65 +190,6 @@ var SpicyLyricTranslater = (() => {
   };
   var storage_default = storage;
 
-  // src/utils/state.ts
-  var DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
-  var DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite";
-  var DEFAULT_GROK_MODEL = "grok-4.5";
-  var DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
-  var DEFAULT_LIBRETRANSLATE_URL = "https://libretranslate.com/translate";
-  function normalizeStoredOpenAIModel(model) {
-    const value = (model || "").trim();
-    return value === "gpt-5.5" || value === "gpt-4o-mini" ? value : DEFAULT_OPENAI_MODEL;
-  }
-  function normalizeStoredGeminiModel(model) {
-    const value = (model || "").trim().replace(/^models\//, "");
-    return value || DEFAULT_GEMINI_MODEL;
-  }
-  function normalizeStoredGrokModel(model) {
-    const value = (model || "").trim();
-    return value === "grok-4.5" || value === "grok-4.3" ? value : DEFAULT_GROK_MODEL;
-  }
-  function normalizeStoredAnthropicModel(model) {
-    const value = (model || "").trim();
-    return value === "claude-haiku-4-5" || value === "claude-sonnet-5" || value === "claude-opus-4-8" ? value : DEFAULT_ANTHROPIC_MODEL;
-  }
-  var state = {
-    isEnabled: storage.get("translation-enabled") === "true",
-    isTranslating: false,
-    targetLanguage: storage.get("target-language") || "en",
-    autoTranslate: storage.get("auto-translate") === "true",
-    showNotifications: storage.get("show-notifications") !== "false",
-    preferredApi: storage.get("preferred-api") || "google",
-    customApiUrl: storage.get("custom-api-url") || "",
-    customApiKey: storage.getSecret("custom-api-key") || "",
-    customApiFormat: storage.get("custom-api-format") || "generic",
-    customApiModel: storage.get("custom-api-model") || "",
-    libreTranslateApiUrl: storage.get("libretranslate-api-url") || DEFAULT_LIBRETRANSLATE_URL,
-    libreTranslateApiKey: storage.getSecret("libretranslate-api-key") || "",
-    deeplApiKey: storage.getSecret("deepl-api-key") || "",
-    openaiApiKey: storage.getSecret("openai-api-key") || "",
-    openaiModel: normalizeStoredOpenAIModel(storage.get("openai-model")),
-    geminiApiKey: storage.getSecret("gemini-api-key") || "",
-    geminiModel: normalizeStoredGeminiModel(storage.get("gemini-model")),
-    geminiTemperature: storage.get("gemini-temperature") || "0.3",
-    grokApiKey: storage.getSecret("grok-api-key") || "",
-    grokModel: normalizeStoredGrokModel(storage.get("grok-model")),
-    anthropicApiKey: storage.getSecret("anthropic-api-key") || "",
-    anthropicModel: normalizeStoredAnthropicModel(storage.get("anthropic-model")),
-    maxParallelChunks: storage.get("max-parallel-chunks") || "4",
-    lastTranslatedSongUri: null,
-    translatedLyrics: /* @__PURE__ */ new Map(),
-    lastViewMode: null,
-    translationAbortController: null,
-    overlayMode: storage.get("overlay-mode") || "interleaved",
-    detectedLanguage: null,
-    syncWordHighlight: storage.get("sync-word-highlight") !== "false",
-    showQualityIndicator: storage.get("show-quality-indicator") !== "false",
-    vocabularyMode: storage.get("vocabulary-mode") === "true",
-    hideConnectionIndicator: storage.get("hide-connection-indicator") === "true",
-    _qualityByIndex: void 0
-  };
-
   // src/utils/debug.ts
   var debugMode = storage.get("debug-mode") === "true";
   var TAG = "%c[SpicyLyricTranslator]";
@@ -1919,11 +1860,11 @@ var SpicyLyricTranslater = (() => {
   }
 
   // src/utils/translator.ts
-  var DEFAULT_OPENAI_MODEL2 = "gpt-4o-mini";
-  var DEFAULT_GEMINI_MODEL2 = "gemini-3.1-flash-lite";
-  var DEFAULT_GROK_MODEL2 = "grok-4.5";
-  var DEFAULT_ANTHROPIC_MODEL2 = "claude-haiku-4-5";
-  var DEFAULT_LIBRETRANSLATE_URL2 = "https://libretranslate.com/translate";
+  var DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
+  var DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite";
+  var DEFAULT_GROK_MODEL = "grok-4.5";
+  var DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5";
+  var DEFAULT_LIBRETRANSLATE_URL = "https://libretranslate.com/translate";
   var DEFAULT_PARALLEL_CHUNKS = 4;
   var GROK_MODELS = ["grok-4.5", "grok-4.3"];
   var ANTHROPIC_MODELS = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"];
@@ -1932,18 +1873,18 @@ var SpicyLyricTranslater = (() => {
   var customApiKey = "";
   var customApiFormat = "generic";
   var customApiModel = "";
-  var libreTranslateApiUrl = DEFAULT_LIBRETRANSLATE_URL2;
+  var libreTranslateApiUrl = DEFAULT_LIBRETRANSLATE_URL;
   var libreTranslateApiKey = "";
   var deeplApiKey = "";
   var openaiApiKey = "";
-  var openaiModel = DEFAULT_OPENAI_MODEL2;
+  var openaiModel = DEFAULT_OPENAI_MODEL;
   var geminiApiKey = "";
-  var geminiModel = DEFAULT_GEMINI_MODEL2;
+  var geminiModel = DEFAULT_GEMINI_MODEL;
   var geminiTemperature = 0.3;
   var grokApiKey = "";
-  var grokModel = DEFAULT_GROK_MODEL2;
+  var grokModel = DEFAULT_GROK_MODEL;
   var anthropicApiKey = "";
-  var anthropicModel = DEFAULT_ANTHROPIC_MODEL2;
+  var anthropicModel = DEFAULT_ANTHROPIC_MODEL;
   var maxParallelChunks = DEFAULT_PARALLEL_CHUNKS;
   var RATE_LIMIT = {
     minDelayMs: 100,
@@ -2362,7 +2303,7 @@ var SpicyLyricTranslater = (() => {
     const values = Array.isArray(text) ? text : [text];
     values.forEach((value) => params.append("q", value));
     params.set("source", "auto");
-    params.set("target", targetLang);
+    params.set("target", getApiTargetLanguage(targetLang));
     params.set("format", "text");
     if (libreTranslateApiKey) {
       params.set("api_key", libreTranslateApiKey);
@@ -2598,6 +2539,32 @@ var SpicyLyricTranslater = (() => {
     { code: "yo", name: "Yoruba" },
     { code: "zu", name: "Zulu" }
   ];
+  var LANGUAGE_VARIANTS = [
+    {
+      code: "ca-valencia",
+      baseCode: "ca",
+      label: "Valencian",
+      promptName: "Valencian (the Valencian variant of Catalan, using Valencian vocabulary, orthography and verb forms as codified by the Acad\xE8mia Valenciana de la Llengua)"
+    }
+  ];
+  var VARIANT_CAPABLE_APIS = ["openai", "gemini", "grok", "anthropic", "custom"];
+  function providerSupportsLanguageVariants(api) {
+    return VARIANT_CAPABLE_APIS.includes(api);
+  }
+  function getLanguageVariantForBase(baseCode) {
+    return LANGUAGE_VARIANTS.find((variant) => variant.baseCode === baseCode);
+  }
+  function getLanguageVariantByCode(code) {
+    return LANGUAGE_VARIANTS.find((variant) => variant.code === code);
+  }
+  function resolveTargetLanguage(baseCode, variantEnabled, api) {
+    if (!variantEnabled || !providerSupportsLanguageVariants(api))
+      return baseCode;
+    return getLanguageVariantForBase(baseCode)?.code || baseCode;
+  }
+  function getApiTargetLanguage(targetLang) {
+    return getLanguageVariantByCode(targetLang)?.baseCode || targetLang;
+  }
   function getCachedTranslation(text, targetLang) {
     const cache = storage_default.getJSON("translation-cache", {});
     const key = `${targetLang}:${text}`;
@@ -2673,7 +2640,7 @@ var SpicyLyricTranslater = (() => {
   async function translateWithGoogle(text, targetLang, sourceLang) {
     const encodedText = encodeURIComponent(text);
     const sl = normalizeSourceLangHint(sourceLang);
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${targetLang}&dt=t&q=${encodedText}`;
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${getApiTargetLanguage(targetLang)}&dt=t&q=${encodedText}`;
     const response = await fetch(url);
     recordApiUsage(null);
     if (!response.ok) {
@@ -2697,7 +2664,7 @@ var SpicyLyricTranslater = (() => {
   }
   function normalizeLibreTranslateUrl(url) {
     const trimmed = (url || "").trim();
-    return trimmed || DEFAULT_LIBRETRANSLATE_URL2;
+    return trimmed || DEFAULT_LIBRETRANSLATE_URL;
   }
   function getLibreTranslateUrl() {
     const url = normalizeLibreTranslateUrl(libreTranslateApiUrl);
@@ -2775,7 +2742,7 @@ var SpicyLyricTranslater = (() => {
     if (!openaiApiKey) {
       throw createProviderConfigError("OpenAI API key not configured. Set it in Settings.");
     }
-    const langName = SUPPORTED_LANGUAGES.find((l) => l.code === targetLang)?.name || targetLang;
+    const langName = getTranslationLanguageName(targetLang);
     const data = await postJsonProvider(
       "https://api.openai.com/v1/chat/completions",
       buildOpenAIChatBody(text, langName),
@@ -2798,22 +2765,22 @@ var SpicyLyricTranslater = (() => {
   function normalizeOpenAIModelName(model) {
     const trimmed = (model || "").trim();
     if (!trimmed)
-      return DEFAULT_OPENAI_MODEL2;
+      return DEFAULT_OPENAI_MODEL;
     if (trimmed === "gpt-5.5" || trimmed === "gpt-4o-mini")
       return trimmed;
-    return DEFAULT_OPENAI_MODEL2;
+    return DEFAULT_OPENAI_MODEL;
   }
   function normalizeGrokModelName(model) {
     const trimmed = (model || "").trim();
     if (!trimmed)
-      return DEFAULT_GROK_MODEL2;
-    return GROK_MODELS.includes(trimmed) ? trimmed : DEFAULT_GROK_MODEL2;
+      return DEFAULT_GROK_MODEL;
+    return GROK_MODELS.includes(trimmed) ? trimmed : DEFAULT_GROK_MODEL;
   }
   function normalizeAnthropicModelName(model) {
     const trimmed = (model || "").trim();
     if (!trimmed)
-      return DEFAULT_ANTHROPIC_MODEL2;
-    return ANTHROPIC_MODELS.includes(trimmed) ? trimmed : DEFAULT_ANTHROPIC_MODEL2;
+      return DEFAULT_ANTHROPIC_MODEL;
+    return ANTHROPIC_MODELS.includes(trimmed) ? trimmed : DEFAULT_ANTHROPIC_MODEL;
   }
   function isOpenAISpeedModeModel(model) {
     return model === "gpt-5.5";
@@ -2872,7 +2839,7 @@ ${text}`;
   }
   function normalizeGeminiModelName(model) {
     const trimmed = (model || "").trim().replace(/^models\//, "");
-    return trimmed || DEFAULT_GEMINI_MODEL2;
+    return trimmed || DEFAULT_GEMINI_MODEL;
   }
   function normalizeGeminiTemperature(value) {
     const parsed = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""));
@@ -2925,7 +2892,7 @@ ${text}`;
     if (!geminiApiKey) {
       throw createProviderConfigError("Gemini API key not configured. Set it in Settings.");
     }
-    const langName = SUPPORTED_LANGUAGES.find((l) => l.code === targetLang)?.name || targetLang;
+    const langName = getTranslationLanguageName(targetLang);
     const data = await postJsonProvider(
       appendGeminiApiKeyQuery(getGeminiGenerateContentUrl(geminiModel), geminiApiKey),
       {
@@ -3058,7 +3025,8 @@ ${text}`;
       "zh": "ZH-HANS",
       "zh-TW": "ZH-HANT"
     };
-    return deeplLangMap[targetLang] || targetLang.toUpperCase();
+    const apiLang = getApiTargetLanguage(targetLang);
+    return deeplLangMap[apiLang] || apiLang.toUpperCase();
   }
   function buildDeepLBody(texts, targetLang) {
     return {
@@ -3073,6 +3041,9 @@ ${text}`;
     };
   }
   function getTranslationLanguageName(targetLang) {
+    const variant = getLanguageVariantByCode(targetLang);
+    if (variant)
+      return variant.promptName;
     return SUPPORTED_LANGUAGES.find((l) => l.code === targetLang)?.name || targetLang;
   }
   function getCustomApiHeaders(format) {
@@ -3140,12 +3111,13 @@ ${text}`;
         target_lang: getDeepLTargetLanguage(targetLang)
       };
     }
+    const apiLang = getApiTargetLanguage(targetLang);
     return {
       text,
       q: text,
       source: "auto",
-      target: targetLang,
-      target_lang: targetLang,
+      target: apiLang,
+      target_lang: apiLang,
       format: "text"
     };
   }
@@ -3320,8 +3292,8 @@ ${text}`;
         q: texts,
         text: texts,
         source: "auto",
-        target: targetLang,
-        target_lang: targetLang,
+        target: getApiTargetLanguage(targetLang),
+        target_lang: getApiTargetLanguage(targetLang),
         format: "text"
       },
       getCustomApiHeaders(customApiFormat || "generic"),
@@ -4200,6 +4172,72 @@ ${text}`;
     return typeof navigator !== "undefined" && !navigator.onLine;
   }
 
+  // src/utils/state.ts
+  var DEFAULT_OPENAI_MODEL2 = "gpt-4o-mini";
+  var DEFAULT_GEMINI_MODEL2 = "gemini-3.1-flash-lite";
+  var DEFAULT_GROK_MODEL2 = "grok-4.5";
+  var DEFAULT_ANTHROPIC_MODEL2 = "claude-haiku-4-5";
+  var DEFAULT_LIBRETRANSLATE_URL2 = "https://libretranslate.com/translate";
+  function normalizeStoredOpenAIModel(model) {
+    const value = (model || "").trim();
+    return value === "gpt-5.5" || value === "gpt-4o-mini" ? value : DEFAULT_OPENAI_MODEL2;
+  }
+  function normalizeStoredGeminiModel(model) {
+    const value = (model || "").trim().replace(/^models\//, "");
+    return value || DEFAULT_GEMINI_MODEL2;
+  }
+  function normalizeStoredGrokModel(model) {
+    const value = (model || "").trim();
+    return value === "grok-4.5" || value === "grok-4.3" ? value : DEFAULT_GROK_MODEL2;
+  }
+  function normalizeStoredAnthropicModel(model) {
+    const value = (model || "").trim();
+    return value === "claude-haiku-4-5" || value === "claude-sonnet-5" || value === "claude-opus-4-8" ? value : DEFAULT_ANTHROPIC_MODEL2;
+  }
+  function resolveStoredTargetLanguage() {
+    return resolveTargetLanguage(
+      storage.get("target-language") || "en",
+      storage.get("language-variant") === "true",
+      storage.get("preferred-api") || "google"
+    );
+  }
+  var state = {
+    isEnabled: storage.get("translation-enabled") === "true",
+    isTranslating: false,
+    targetLanguage: resolveStoredTargetLanguage(),
+    autoTranslate: storage.get("auto-translate") === "true",
+    showNotifications: storage.get("show-notifications") !== "false",
+    preferredApi: storage.get("preferred-api") || "google",
+    customApiUrl: storage.get("custom-api-url") || "",
+    customApiKey: storage.getSecret("custom-api-key") || "",
+    customApiFormat: storage.get("custom-api-format") || "generic",
+    customApiModel: storage.get("custom-api-model") || "",
+    libreTranslateApiUrl: storage.get("libretranslate-api-url") || DEFAULT_LIBRETRANSLATE_URL2,
+    libreTranslateApiKey: storage.getSecret("libretranslate-api-key") || "",
+    deeplApiKey: storage.getSecret("deepl-api-key") || "",
+    openaiApiKey: storage.getSecret("openai-api-key") || "",
+    openaiModel: normalizeStoredOpenAIModel(storage.get("openai-model")),
+    geminiApiKey: storage.getSecret("gemini-api-key") || "",
+    geminiModel: normalizeStoredGeminiModel(storage.get("gemini-model")),
+    geminiTemperature: storage.get("gemini-temperature") || "0.3",
+    grokApiKey: storage.getSecret("grok-api-key") || "",
+    grokModel: normalizeStoredGrokModel(storage.get("grok-model")),
+    anthropicApiKey: storage.getSecret("anthropic-api-key") || "",
+    anthropicModel: normalizeStoredAnthropicModel(storage.get("anthropic-model")),
+    maxParallelChunks: storage.get("max-parallel-chunks") || "4",
+    lastTranslatedSongUri: null,
+    translatedLyrics: /* @__PURE__ */ new Map(),
+    lastViewMode: null,
+    translationAbortController: null,
+    overlayMode: storage.get("overlay-mode") || "interleaved",
+    detectedLanguage: null,
+    syncWordHighlight: storage.get("sync-word-highlight") !== "false",
+    showQualityIndicator: storage.get("show-quality-indicator") !== "false",
+    vocabularyMode: storage.get("vocabulary-mode") === "true",
+    hideConnectionIndicator: storage.get("hide-connection-indicator") === "true",
+    _qualityByIndex: void 0
+  };
+
   // src/utils/lyricsFetcher.ts
   var SPICY_API_HOST = "api.spicylyrics.org";
   var SPICY_QUERY_PATH = "/query";
@@ -5010,6 +5048,16 @@ ${text}`;
   }
 
   // src/utils/translationOverlay.ts
+  var CINEMA_CONTAINER_SELECTOR = ".Cinema--Container, .spicy-lyrics-cinema, .Root__cinema-view";
+  var CINEMA_LYRICS_CONTENT_SELECTOR = ".Cinema--Container .LyricsContent, .spicy-lyrics-cinema .LyricsContent, .Root__cinema-view .LyricsContent";
+  function isSidebarLyricsActive(doc = document) {
+    if (doc.body?.classList?.contains("SpicySidebarLyrics__Active"))
+      return true;
+    return Boolean(doc.querySelector("#SpicyLyricsNPVCard #SpicyLyricsPage, #SpicyLyricsPage.CardMode"));
+  }
+  function findSidebarLyricsPage(doc = document) {
+    return doc.querySelector("#SpicyLyricsNPVCard #SpicyLyricsPage") || doc.querySelector("#SpicyLyricsPage.CardMode") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage");
+  }
   var currentConfig = {
     mode: "replace",
     opacity: 0.85,
@@ -5291,10 +5339,11 @@ ${text}`;
     const scrollContainerLines = doc.querySelectorAll(`#SpicyLyricsPage .SpicyLyricsScrollContainer .line${excludeSelector}`);
     if (scrollContainerLines.length > 0)
       return scrollContainerLines;
-    const isSidebarDoc = doc.body?.classList?.contains("SpicySidebarLyrics__Active") || !!doc.querySelector("#SpicyLyricsNPVCard") || !!doc.querySelector(".Root__right-sidebar #SpicyLyricsPage");
+    const isSidebarDoc = doc.body?.classList?.contains("SpicySidebarLyrics__Active") || !!doc.querySelector("#SpicyLyricsNPVCard") || !!doc.querySelector(".Root__right-sidebar #SpicyLyricsPage") || isSidebarLyricsActive(doc);
     if (isSidebarDoc) {
-      const sidebarLines = doc.querySelectorAll(`.Root__right-sidebar #SpicyLyricsPage .line${excludeSelector}`);
-      if (sidebarLines.length > 0)
+      const sidebarPage = findSidebarLyricsPage(doc);
+      const sidebarLines = sidebarPage?.querySelectorAll(`.line${excludeSelector}`);
+      if (sidebarLines && sidebarLines.length > 0)
         return sidebarLines;
     }
     const compactLines = doc.querySelectorAll(`#SpicyLyricsPage.ForcedCompactMode .line${excludeSelector}`);
@@ -5348,9 +5397,10 @@ ${text}`;
     const scrollContainer = doc.querySelector("#SpicyLyricsPage .SpicyLyricsScrollContainer");
     if (scrollContainer)
       return scrollContainer;
-    const isSidebarDoc = doc.body?.classList?.contains("SpicySidebarLyrics__Active") || !!doc.querySelector("#SpicyLyricsNPVCard") || !!doc.querySelector(".Root__right-sidebar #SpicyLyricsPage");
+    const isSidebarDoc = doc.body?.classList?.contains("SpicySidebarLyrics__Active") || !!doc.querySelector("#SpicyLyricsNPVCard") || !!doc.querySelector(".Root__right-sidebar #SpicyLyricsPage") || isSidebarLyricsActive(doc);
     if (isSidebarDoc) {
-      const sidebarContainer = doc.querySelector(".Root__right-sidebar #SpicyLyricsPage .SpicyLyricsScrollContainer") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage .LyricsContent") || doc.querySelector("#SpicyLyricsNPVCard .LyricsContent");
+      const sidebarPage = findSidebarLyricsPage(doc);
+      const sidebarContainer = sidebarPage?.querySelector(".SpicyLyricsScrollContainer") || sidebarPage?.querySelector(".LyricsContent") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage .SpicyLyricsScrollContainer") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage .LyricsContent") || doc.querySelector("#SpicyLyricsNPVCard .LyricsContent");
       if (sidebarContainer)
         return sidebarContainer;
     }
@@ -6749,8 +6799,8 @@ ${text}`;
         activeLineObservers.delete(doc);
       }
       let lyricsContainer = findLyricsContainer(doc);
-      if (!lyricsContainer && (doc.body.classList.contains("SpicySidebarLyrics__Active") || doc.querySelector("#SpicyLyricsNPVCard") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage"))) {
-        lyricsContainer = doc.querySelector(".Root__right-sidebar #SpicyLyricsPage");
+      if (!lyricsContainer && (doc.body.classList.contains("SpicySidebarLyrics__Active") || doc.querySelector("#SpicyLyricsNPVCard") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage") || isSidebarLyricsActive(doc))) {
+        lyricsContainer = findSidebarLyricsPage(doc) || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage");
       }
       if (!lyricsContainer) {
         lyricsContainer = doc.querySelector(".spicy-pip-wrapper #SpicyLyricsPage");
@@ -6990,6 +7040,7 @@ body.slt-overlay-active .LyricsContent {}
 }
 
 .Cinema--Container .slt-interleaved-translation,
+.Root__cinema-view .slt-interleaved-translation,
 #SpicyLyricsPage.ForcedCompactMode .slt-interleaved-translation {
     font-size: calc(0.88em * var(--slt-overlay-font-scale, 1));
 }
@@ -6998,7 +7049,8 @@ body.slt-overlay-active .LyricsContent {}
     font-size: calc(0.78em * var(--slt-overlay-font-scale, 1));
 }
 
-body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
+body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation,
+#SpicyLyricsPage.CardMode .slt-interleaved-translation {
     font-size: calc(0.65em * var(--slt-overlay-font-scale, 1));
 }
 
@@ -7051,6 +7103,7 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
 }
 
 .Cinema--Container .slt-original-line,
+.Root__cinema-view .slt-original-line,
 #SpicyLyricsPage.ForcedCompactMode .slt-original-line {
     font-size: calc(0.88em * var(--slt-overlay-font-scale, 1));
 }
@@ -7059,7 +7112,8 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
     font-size: calc(0.78em * var(--slt-overlay-font-scale, 1));
 }
 
-body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-original-line {
+body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-original-line,
+#SpicyLyricsPage.CardMode .slt-original-line {
     font-size: calc(0.65em * var(--slt-overlay-font-scale, 1));
     padding: 2px 0;
 }
@@ -7110,6 +7164,7 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-original-line {
 }
 
 .Cinema--Container .slt-romanization-line,
+.Root__cinema-view .slt-romanization-line,
 #SpicyLyricsPage.ForcedCompactMode .slt-romanization-line {
     font-size: calc(0.75em * var(--slt-overlay-font-scale, 1));
     padding: 3px 0;
@@ -7120,7 +7175,8 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-original-line {
     padding: 1px 0;
 }
 
-body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-romanization-line {
+body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-romanization-line,
+#SpicyLyricsPage.CardMode .slt-romanization-line {
     font-size: calc(0.55em * var(--slt-overlay-font-scale, 1));
     padding: 1px 0;
     margin: 0;
@@ -7452,6 +7508,7 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-romanization-line {
 
 
 .Cinema--Container .slt-replace-line,
+.Root__cinema-view .slt-replace-line,
 #SpicyLyricsPage.ForcedCompactMode .slt-replace-line {
     padding: 14px 0;
 }
@@ -7462,7 +7519,8 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-romanization-line {
     font-size: 0.9em;
 }
 
-body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-replace-line {
+body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-replace-line,
+#SpicyLyricsPage.CardMode .slt-replace-line {
     padding: 4px 0;
     font-size: 0.8em;
 }
@@ -7484,7 +7542,8 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-replace-line {
 }
 
 
-body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
+body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation,
+#SpicyLyricsPage.CardMode .slt-interleaved-translation {
     font-size: calc(0.65em * var(--slt-overlay-font-scale, 1));
     margin-top: 2px;
     margin-bottom: 4px;
@@ -7772,7 +7831,9 @@ body.slt-overlay-active .LyricsContent {}
 }
 
 .Cinema--Container .slt-interleaved-overlay .slt-interleaved-translation,
+.Root__cinema-view .slt-interleaved-overlay .slt-interleaved-translation,
 .Cinema--Container .slt-interleaved-translation,
+.Root__cinema-view .slt-interleaved-translation,
 #SpicyLyricsPage.ForcedCompactMode .slt-interleaved-overlay .slt-interleaved-translation,
 #SpicyLyricsPage.ForcedCompactMode .slt-interleaved-translation {
     font-size: calc(0.88em * var(--slt-overlay-font-scale, 1));
@@ -7784,7 +7845,9 @@ body.slt-overlay-active .LyricsContent {}
 }
 
 body.SpicySidebarLyrics__Active .slt-interleaved-overlay .slt-interleaved-translation,
-body.SpicySidebarLyrics__Active .slt-interleaved-translation {
+#SpicyLyricsPage.CardMode .slt-interleaved-overlay .slt-interleaved-translation,
+body.SpicySidebarLyrics__Active .slt-interleaved-translation,
+#SpicyLyricsPage.CardMode .slt-interleaved-translation {
     font-size: calc(0.65em * var(--slt-overlay-font-scale, 1));
     margin-top: 1px;
     margin-bottom: 3px;
@@ -7932,16 +7995,19 @@ body.SpicySidebarLyrics__Active .slt-interleaved-translation {
 
 
 
-body.SpicySidebarLyrics__Active .slt-sync-line {
+body.SpicySidebarLyrics__Active .slt-sync-line,
+#SpicyLyricsPage.CardMode .slt-sync-line {
     margin: 4px 0;
 }
 
-body.SpicySidebarLyrics__Active .slt-sync-translation {
+body.SpicySidebarLyrics__Active .slt-sync-translation,
+#SpicyLyricsPage.CardMode .slt-sync-translation {
     font-size: 0.65em;
     margin-top: 2px;
 }
 
-body.SpicySidebarLyrics__Active .slt-sync-word.slt-word-active {
+body.SpicySidebarLyrics__Active .slt-sync-word.slt-word-active,
+#SpicyLyricsPage.CardMode .slt-sync-word.slt-word-active {
     text-shadow: 0 0 6px rgba(255, 255, 255, 0.4);
 }
 
@@ -7956,17 +8022,20 @@ body.SpicySidebarLyrics__Active .slt-sync-word.slt-word-active {
 
 
 .Cinema--Container .slt-sync-line,
+.Root__cinema-view .slt-sync-line,
 #SpicyLyricsPage.ForcedCompactMode .slt-sync-line {
     margin: 12px 0;
 }
 
 .Cinema--Container .slt-sync-translation,
+.Root__cinema-view .slt-sync-translation,
 #SpicyLyricsPage.ForcedCompactMode .slt-sync-translation {
     font-size: 0.85em;
     margin-top: 6px;
 }
 
 .Cinema--Container .slt-sync-word.slt-word-active,
+.Root__cinema-view .slt-sync-word.slt-word-active,
 #SpicyLyricsPage.ForcedCompactMode .slt-sync-word.slt-word-active {
     text-shadow: 
         0 0 15px rgba(255, 255, 255, 0.6),
@@ -8067,13 +8136,15 @@ body.slt-hide-quality-indicator .slt-quality-indicator {
     -webkit-background-clip: border-box !important;
 }
 
-body.SpicySidebarLyrics__Active .slt-quality-indicator {
+body.SpicySidebarLyrics__Active .slt-quality-indicator,
+#SpicyLyricsPage.CardMode .slt-quality-indicator {
     font-size: 7px;
     padding: 1px 3px;
     bottom: -1px;
 }
 
-body.SpicySidebarLyrics__Active .slt-qi-dot {
+body.SpicySidebarLyrics__Active .slt-qi-dot,
+#SpicyLyricsPage.CardMode .slt-qi-dot {
     width: 4px;
     height: 4px;
 }
@@ -8207,9 +8278,13 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
 
 
 .Cinema--Container .LyricsContainer::before,
+.Root__cinema-view .LyricsContainer::before,
 .Cinema--Container .LyricsContainer::after,
+.Root__cinema-view .LyricsContainer::after,
 .Cinema--Container .simplebar-content::before,
+.Root__cinema-view .simplebar-content::before,
 .Cinema--Container .simplebar-content::after,
+.Root__cinema-view .simplebar-content::after,
 #SpicyLyricsPage.ForcedCompactMode .LyricsContainer::before,
 #SpicyLyricsPage.ForcedCompactMode .LyricsContainer::after,
 #SpicyLyricsPage.ForcedCompactMode .simplebar-content::before,
@@ -8388,7 +8463,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     if (metadata?.LoadedVersion) {
       return metadata.LoadedVersion;
     }
-    return true ? "2.1.2" : "0.0.0";
+    return true ? "2.1.3" : "0.0.0";
   };
   var CURRENT_VERSION = getLoadedVersion();
   var GITHUB_REPO = "7xeh/SpicyLyricTranslator";
@@ -9770,7 +9845,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     return false;
   }
   function isSpicyLyricsOpen() {
-    if (document.querySelector("#SpicyLyricsPage") || document.querySelector(".spicy-pip-wrapper #SpicyLyricsPage") || document.querySelector(".Cinema--Container") || document.querySelector(".spicy-lyrics-cinema") || document.querySelector("#SpicyLyricsNPVCard") || document.querySelector(".Root__right-sidebar #SpicyLyricsPage") || document.body.classList.contains("SpicySidebarLyrics__Active")) {
+    if (document.querySelector("#SpicyLyricsPage") || document.querySelector(".spicy-pip-wrapper #SpicyLyricsPage") || document.querySelector(".Cinema--Container") || document.querySelector(".spicy-lyrics-cinema") || document.querySelector(CINEMA_CONTAINER_SELECTOR) || document.querySelector("#SpicyLyricsNPVCard") || document.querySelector(".Root__right-sidebar #SpicyLyricsPage") || isSidebarLyricsActive() || document.body.classList.contains("SpicySidebarLyrics__Active")) {
       return true;
     }
     const pipWindow = getPIPWindow2();
@@ -9786,13 +9861,14 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       if (pipContent)
         return pipContent;
     }
-    const isSidebarLyrics = document.body.classList.contains("SpicySidebarLyrics__Active") || Boolean(document.querySelector("#SpicyLyricsNPVCard")) || Boolean(document.querySelector(".Root__right-sidebar #SpicyLyricsPage"));
+    const isSidebarLyrics = document.body.classList.contains("SpicySidebarLyrics__Active") || Boolean(document.querySelector("#SpicyLyricsNPVCard")) || Boolean(document.querySelector(".Root__right-sidebar #SpicyLyricsPage")) || isSidebarLyricsActive();
     if (isSidebarLyrics) {
-      const sidebarContent = document.querySelector(".Root__right-sidebar #SpicyLyricsPage .LyricsContainer .LyricsContent") || document.querySelector(".Root__right-sidebar #SpicyLyricsPage .LyricsContent") || document.querySelector("#SpicyLyricsNPVCard .LyricsContent");
+      const sidebarPage = findSidebarLyricsPage();
+      const sidebarContent = sidebarPage?.querySelector(".LyricsContainer .LyricsContent") || sidebarPage?.querySelector(".LyricsContent") || document.querySelector(".Root__right-sidebar #SpicyLyricsPage .LyricsContainer .LyricsContent") || document.querySelector(".Root__right-sidebar #SpicyLyricsPage .LyricsContent") || document.querySelector("#SpicyLyricsNPVCard .LyricsContent");
       if (sidebarContent)
         return sidebarContent;
     }
-    return document.querySelector("#SpicyLyricsPage .LyricsContainer .LyricsContent") || document.querySelector("#SpicyLyricsPage .LyricsContent") || document.querySelector(".spicy-pip-wrapper .LyricsContent") || document.querySelector(".Cinema--Container .LyricsContent") || document.querySelector(".LyricsContainer .LyricsContent");
+    return document.querySelector("#SpicyLyricsPage .LyricsContainer .LyricsContent") || document.querySelector("#SpicyLyricsPage .LyricsContent") || document.querySelector(".spicy-pip-wrapper .LyricsContent") || document.querySelector(CINEMA_LYRICS_CONTENT_SELECTOR) || document.querySelector(".LyricsContainer .LyricsContent");
   }
   function waitForElement(selector, timeout = 1e4) {
     return new Promise((resolve) => {
@@ -9902,10 +9978,28 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       insertTranslateButtonIntoDocument(pipWindow.document);
     }
   }
+  function insertTranslateButtonIntoCardControls(doc) {
+    const cardControls = doc.querySelector("#SpicyLyricsNPVCard .CardControls");
+    if (!cardControls)
+      return false;
+    if (cardControls.querySelector("#TranslateToggle"))
+      return true;
+    const button = createTranslateButton();
+    button.classList.add("CardControl");
+    const expandButton = cardControls.querySelector("#NPVCardExpand");
+    if (expandButton) {
+      expandButton.insertAdjacentElement("beforebegin", button);
+    } else {
+      cardControls.insertBefore(button, cardControls.firstChild);
+    }
+    return true;
+  }
   function insertTranslateButtonIntoDocument(doc) {
+    if (insertTranslateButtonIntoCardControls(doc))
+      return;
     let viewControls = doc.querySelector("#SpicyLyricsPage .ContentBox .ViewControls") || doc.querySelector("#SpicyLyricsPage .ViewControls");
-    if (!viewControls && (doc.body.classList.contains("SpicySidebarLyrics__Active") || doc.querySelector("#SpicyLyricsNPVCard") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage"))) {
-      viewControls = doc.querySelector(".Root__right-sidebar #SpicyLyricsPage .ViewControls");
+    if (!viewControls && (doc.body.classList.contains("SpicySidebarLyrics__Active") || doc.querySelector("#SpicyLyricsNPVCard") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage") || isSidebarLyricsActive(doc))) {
+      viewControls = findSidebarLyricsPage(doc)?.querySelector(".ViewControls") || doc.querySelector(".Root__right-sidebar #SpicyLyricsPage .ViewControls");
     }
     if (!viewControls) {
       viewControls = doc.querySelector(".ViewControls");
@@ -10014,10 +10108,10 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       const lyricsContent = doc.querySelectorAll(`#SpicyLyricsPage .LyricsContent .line${excludeSelector}`);
       if (lyricsContent.length > 0)
         return lyricsContent;
-      const isSidebarDoc = doc.body.classList.contains("SpicySidebarLyrics__Active") || !!doc.querySelector("#SpicyLyricsNPVCard") || !!doc.querySelector(".Root__right-sidebar #SpicyLyricsPage");
+      const isSidebarDoc = doc.body.classList.contains("SpicySidebarLyrics__Active") || !!doc.querySelector("#SpicyLyricsNPVCard") || !!doc.querySelector(".Root__right-sidebar #SpicyLyricsPage") || isSidebarLyricsActive(doc);
       if (isSidebarDoc) {
-        const sidebar = doc.querySelectorAll(`.Root__right-sidebar #SpicyLyricsPage .line${excludeSelector}`);
-        if (sidebar.length > 0)
+        const sidebar = findSidebarLyricsPage(doc)?.querySelectorAll(`.line${excludeSelector}`);
+        if (sidebar && sidebar.length > 0)
           return sidebar;
       }
       const generic = doc.querySelectorAll(`.LyricsContent .line${excludeSelector}, .LyricsContainer .line${excludeSelector}`);
@@ -11132,9 +11226,9 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   }
   async function onSpicyLyricsOpen() {
     let viewControls = await waitForElement("#SpicyLyricsPage .ViewControls", 3e3);
-    const isSidebarLyrics = document.body.classList.contains("SpicySidebarLyrics__Active") || document.querySelector("#SpicyLyricsNPVCard") || document.querySelector(".Root__right-sidebar #SpicyLyricsPage");
+    const isSidebarLyrics = document.body.classList.contains("SpicySidebarLyrics__Active") || document.querySelector("#SpicyLyricsNPVCard") || document.querySelector(".Root__right-sidebar #SpicyLyricsPage") || isSidebarLyricsActive();
     if (!viewControls && isSidebarLyrics) {
-      viewControls = await waitForElement(".Root__right-sidebar #SpicyLyricsPage .ViewControls", 2e3);
+      viewControls = await waitForElement("#SpicyLyricsNPVCard #SpicyLyricsPage .ViewControls, .Root__right-sidebar #SpicyLyricsPage .ViewControls", 2e3);
     }
     if (!viewControls)
       viewControls = await waitForElement(".ViewControls", 2e3);
@@ -11821,6 +11915,19 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
       storageKey: "target-language",
       defaultValue: "en",
       options: SUPPORTED_LANGUAGES.map((language) => ({ value: language.code, text: language.name })),
+      effects: ["retranslate", "fieldVisibility"]
+    },
+    {
+      id: "language-variant",
+      section: "Translation",
+      keywords: "variant regional dialect valencian valencia catalan local",
+      label: "Use Regional Variant",
+      type: "toggle",
+      storageKey: "language-variant",
+      defaultValue: false,
+      description: "Ask the model for the regional variant of the target language. Only available on AI providers that accept written instructions.",
+      visibleForApis: ["openai", "gemini", "grok", "anthropic", "custom"],
+      visibleWhen: () => Boolean(getLanguageVariantForBase(storage.get("target-language") || "en")),
       effects: ["retranslate"]
     },
     {
@@ -12131,8 +12238,17 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   function getCurrentApiPreference() {
     return storage.get("preferred-api") || state.preferredApi || "google";
   }
+  function getResolvedTargetLanguage() {
+    return resolveTargetLanguage(
+      storage.get("target-language") || "en",
+      storage.get("language-variant") === "true",
+      getCurrentApiPreference()
+    );
+  }
   function isSettingFieldVisible(field, api = getCurrentApiPreference()) {
-    return !field.visibleForApis || field.visibleForApis.includes(api);
+    if (field.visibleForApis && !field.visibleForApis.includes(api))
+      return false;
+    return !field.visibleWhen || field.visibleWhen();
   }
   function normalizeLegacySelectValue(fieldId, value) {
     const stored = (value || "").trim().replace(/^models\//, "");
@@ -12197,13 +12313,17 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
     }
     switch (field.id) {
       case "target-language":
-        state.targetLanguage = String(value);
+        state.targetLanguage = getResolvedTargetLanguage();
+        break;
+      case "language-variant":
+        state.targetLanguage = getResolvedTargetLanguage();
         break;
       case "overlay-mode":
         state.overlayMode = String(value);
         break;
       case "preferred-api":
         state.preferredApi = String(value);
+        state.targetLanguage = getResolvedTargetLanguage();
         configureTranslationApi();
         break;
       case "custom-api-url":
@@ -12446,7 +12566,7 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
   function handleSettingChange(field, value, root, visibleDisplay = "") {
     const effects = writeSettingValue(field, value);
     runSettingEffects(effects, value);
-    if (effects.includes("providerVisibility") && root) {
+    if ((effects.includes("providerVisibility") || effects.includes("fieldVisibility")) && root) {
       updateSettingFieldVisibility(root, visibleDisplay);
     }
   }
@@ -15074,8 +15194,8 @@ body.SpicySidebarLyrics__Active .slt-qi-dot {
           handleTranslateToggle();
       },
       setLanguage: (lang) => {
-        state.targetLanguage = lang;
         storage.set("target-language", lang);
+        state.targetLanguage = getResolvedTargetLanguage();
       },
       translate: translateCurrentLyrics,
       clearCache: clearTranslationCache,

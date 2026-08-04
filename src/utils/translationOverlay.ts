@@ -4,6 +4,20 @@ import type { TranslationQualityMeta } from './state';
 import { storage } from './storage';
 import { containsJapaneseScript } from './japaneseRomanization';
 
+export const CINEMA_CONTAINER_SELECTOR = '.Cinema--Container, .spicy-lyrics-cinema, .Root__cinema-view';
+export const CINEMA_LYRICS_CONTENT_SELECTOR = '.Cinema--Container .LyricsContent, .spicy-lyrics-cinema .LyricsContent, .Root__cinema-view .LyricsContent';
+
+export function isSidebarLyricsActive(doc: Document = document): boolean {
+    if (doc.body?.classList?.contains('SpicySidebarLyrics__Active')) return true;
+    return Boolean(doc.querySelector('#SpicyLyricsNPVCard #SpicyLyricsPage, #SpicyLyricsPage.CardMode'));
+}
+
+export function findSidebarLyricsPage(doc: Document = document): HTMLElement | null {
+    return doc.querySelector('#SpicyLyricsNPVCard #SpicyLyricsPage') ||
+           doc.querySelector('#SpicyLyricsPage.CardMode') ||
+           doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+}
+
 export type OverlayMode = 'replace' | 'interleaved';
 
 export interface OverlayConfig {
@@ -359,10 +373,12 @@ function getLyricLines(doc: Document): NodeListOf<Element> {
 
     const isSidebarDoc = doc.body?.classList?.contains('SpicySidebarLyrics__Active') ||
                          !!doc.querySelector('#SpicyLyricsNPVCard') ||
-                         !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+                         !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage') ||
+                         isSidebarLyricsActive(doc);
     if (isSidebarDoc) {
-        const sidebarLines = doc.querySelectorAll(`.Root__right-sidebar #SpicyLyricsPage .line${excludeSelector}`);
-        if (sidebarLines.length > 0) return sidebarLines;
+        const sidebarPage = findSidebarLyricsPage(doc);
+        const sidebarLines = sidebarPage?.querySelectorAll(`.line${excludeSelector}`);
+        if (sidebarLines && sidebarLines.length > 0) return sidebarLines;
     }
 
     const compactLines = doc.querySelectorAll(`#SpicyLyricsPage.ForcedCompactMode .line${excludeSelector}`);
@@ -424,9 +440,13 @@ function findLyricsContainer(doc: Document): Element | null {
 
     const isSidebarDoc = doc.body?.classList?.contains('SpicySidebarLyrics__Active') ||
                          !!doc.querySelector('#SpicyLyricsNPVCard') ||
-                         !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+                         !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage') ||
+                         isSidebarLyricsActive(doc);
     if (isSidebarDoc) {
-        const sidebarContainer = doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .SpicyLyricsScrollContainer') ||
+        const sidebarPage = findSidebarLyricsPage(doc);
+        const sidebarContainer = sidebarPage?.querySelector('.SpicyLyricsScrollContainer') ||
+                                 sidebarPage?.querySelector('.LyricsContent') ||
+                                 doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .SpicyLyricsScrollContainer') ||
                                  doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContent') ||
                                  doc.querySelector('#SpicyLyricsNPVCard .LyricsContent');
         if (sidebarContainer) return sidebarContainer;
@@ -2145,9 +2165,10 @@ function setupActiveLineObserver(doc: Document): void {
         if (!lyricsContainer && (
             doc.body.classList.contains('SpicySidebarLyrics__Active') ||
             doc.querySelector('#SpicyLyricsNPVCard') ||
-            doc.querySelector('.Root__right-sidebar #SpicyLyricsPage')
+            doc.querySelector('.Root__right-sidebar #SpicyLyricsPage') ||
+            isSidebarLyricsActive(doc)
         )) {
-            lyricsContainer = doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+            lyricsContainer = findSidebarLyricsPage(doc) || doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
         }
 
         if (!lyricsContainer) {
@@ -2532,6 +2553,7 @@ body.slt-overlay-active .LyricsContent {}
 }
 
 .Cinema--Container .slt-interleaved-translation,
+.Root__cinema-view .slt-interleaved-translation,
 #SpicyLyricsPage.ForcedCompactMode .slt-interleaved-translation {
     font-size: calc(0.88em * var(--slt-overlay-font-scale, 1));
 }
@@ -2540,7 +2562,8 @@ body.slt-overlay-active .LyricsContent {}
     font-size: calc(0.78em * var(--slt-overlay-font-scale, 1));
 }
 
-body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
+body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation,
+#SpicyLyricsPage.CardMode .slt-interleaved-translation {
     font-size: calc(0.65em * var(--slt-overlay-font-scale, 1));
 }
 
@@ -2593,6 +2616,7 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
 }
 
 .Cinema--Container .slt-original-line,
+.Root__cinema-view .slt-original-line,
 #SpicyLyricsPage.ForcedCompactMode .slt-original-line {
     font-size: calc(0.88em * var(--slt-overlay-font-scale, 1));
 }
@@ -2601,7 +2625,8 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-interleaved-translation {
     font-size: calc(0.78em * var(--slt-overlay-font-scale, 1));
 }
 
-body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-original-line {
+body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-original-line,
+#SpicyLyricsPage.CardMode .slt-original-line {
     font-size: calc(0.65em * var(--slt-overlay-font-scale, 1));
     padding: 2px 0;
 }
@@ -2652,6 +2677,7 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-original-line {
 }
 
 .Cinema--Container .slt-romanization-line,
+.Root__cinema-view .slt-romanization-line,
 #SpicyLyricsPage.ForcedCompactMode .slt-romanization-line {
     font-size: calc(0.75em * var(--slt-overlay-font-scale, 1));
     padding: 3px 0;
@@ -2662,7 +2688,8 @@ body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-original-line {
     padding: 1px 0;
 }
 
-body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-romanization-line {
+body.SpicySidebarLyrics__Active #SpicyLyricsPage .slt-romanization-line,
+#SpicyLyricsPage.CardMode .slt-romanization-line {
     font-size: calc(0.55em * var(--slt-overlay-font-scale, 1));
     padding: 1px 0;
     margin: 0;

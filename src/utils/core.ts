@@ -17,7 +17,11 @@ import {
     setRomanizationDisplayEnabled,
     setOriginalContentData,
     setQualityContentData,
-    setTimingContentData
+    setTimingContentData,
+    isSidebarLyricsActive,
+    findSidebarLyricsPage,
+    CINEMA_CONTAINER_SELECTOR,
+    CINEMA_LYRICS_CONTENT_SELECTOR
 } from './translationOverlay';
 import { shouldSkipTranslation, detectLanguageHeuristic, detectRomanizedJapanese, isSameLanguage, refineChineseLanguageCode, isLikelyNonTargetLine } from './languageDetection';
 import { openSettingsModal } from './settings';
@@ -249,10 +253,12 @@ export function isSpicyLyricsOpen(): boolean {
     // body class. We accept both so the extension works across versions.
     if (document.querySelector('#SpicyLyricsPage') ||
         document.querySelector('.spicy-pip-wrapper #SpicyLyricsPage') ||
-        document.querySelector('.Cinema--Container') ||
+document.querySelector('.Cinema--Container') ||
         document.querySelector('.spicy-lyrics-cinema') ||
+        document.querySelector(CINEMA_CONTAINER_SELECTOR) ||
         document.querySelector('#SpicyLyricsNPVCard') ||
         document.querySelector('.Root__right-sidebar #SpicyLyricsPage') ||
+        isSidebarLyricsActive() ||
         document.body.classList.contains('SpicySidebarLyrics__Active')) {
         return true;
     }
@@ -276,9 +282,13 @@ export function getLyricsContent(): HTMLElement | null {
 
     const isSidebarLyrics = document.body.classList.contains('SpicySidebarLyrics__Active') ||
                             Boolean(document.querySelector('#SpicyLyricsNPVCard')) ||
-                            Boolean(document.querySelector('.Root__right-sidebar #SpicyLyricsPage'));
+                            Boolean(document.querySelector('.Root__right-sidebar #SpicyLyricsPage')) ||
+                            isSidebarLyricsActive();
     if (isSidebarLyrics) {
-        const sidebarContent = document.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContainer .LyricsContent') ||
+        const sidebarPage = findSidebarLyricsPage();
+        const sidebarContent = sidebarPage?.querySelector('.LyricsContainer .LyricsContent') ||
+                              sidebarPage?.querySelector('.LyricsContent') ||
+                              document.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContainer .LyricsContent') ||
                               document.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContent') ||
                               document.querySelector('#SpicyLyricsNPVCard .LyricsContent');
         if (sidebarContent) return sidebarContent as HTMLElement;
@@ -287,7 +297,7 @@ export function getLyricsContent(): HTMLElement | null {
     return document.querySelector('#SpicyLyricsPage .LyricsContainer .LyricsContent') ||
            document.querySelector('#SpicyLyricsPage .LyricsContent') ||
            document.querySelector('.spicy-pip-wrapper .LyricsContent') ||
-           document.querySelector('.Cinema--Container .LyricsContent') ||
+           document.querySelector(CINEMA_LYRICS_CONTENT_SELECTOR) ||
            document.querySelector('.LyricsContainer .LyricsContent');
 }
 
@@ -411,16 +421,38 @@ export function insertTranslateButton(): void {
     }
 }
 
+function insertTranslateButtonIntoCardControls(doc: Document): boolean {
+    const cardControls = doc.querySelector('#SpicyLyricsNPVCard .CardControls');
+    if (!cardControls) return false;
+    if (cardControls.querySelector('#TranslateToggle')) return true;
+
+    const button = createTranslateButton();
+    button.classList.add('CardControl');
+
+    const expandButton = cardControls.querySelector('#NPVCardExpand');
+    if (expandButton) {
+        expandButton.insertAdjacentElement('beforebegin', button);
+    } else {
+        cardControls.insertBefore(button, cardControls.firstChild);
+    }
+
+    return true;
+}
+
 function insertTranslateButtonIntoDocument(doc: Document): void {
+    if (insertTranslateButtonIntoCardControls(doc)) return;
+
     let viewControls = doc.querySelector('#SpicyLyricsPage .ContentBox .ViewControls') ||
                        doc.querySelector('#SpicyLyricsPage .ViewControls');
 
     if (!viewControls && (
         doc.body.classList.contains('SpicySidebarLyrics__Active') ||
         doc.querySelector('#SpicyLyricsNPVCard') ||
-        doc.querySelector('.Root__right-sidebar #SpicyLyricsPage')
+        doc.querySelector('.Root__right-sidebar #SpicyLyricsPage') ||
+        isSidebarLyricsActive(doc)
     )) {
-        viewControls = doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .ViewControls');
+        viewControls = findSidebarLyricsPage(doc)?.querySelector('.ViewControls') ||
+                       doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .ViewControls');
     }
 
     if (!viewControls) {
@@ -557,10 +589,11 @@ function getLyricsLines(): NodeListOf<Element> {
 
         const isSidebarDoc = doc.body.classList.contains('SpicySidebarLyrics__Active') ||
                              !!doc.querySelector('#SpicyLyricsNPVCard') ||
-                             !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+                             !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage') ||
+                             isSidebarLyricsActive(doc);
         if (isSidebarDoc) {
-            const sidebar = doc.querySelectorAll(`.Root__right-sidebar #SpicyLyricsPage .line${excludeSelector}`);
-            if (sidebar.length > 0) return sidebar;
+            const sidebar = findSidebarLyricsPage(doc)?.querySelectorAll(`.line${excludeSelector}`);
+            if (sidebar && sidebar.length > 0) return sidebar;
         }
 
         const generic = doc.querySelectorAll(`.LyricsContent .line${excludeSelector}, .LyricsContainer .line${excludeSelector}`);
@@ -1798,9 +1831,10 @@ export async function onSpicyLyricsOpen(): Promise<void> {
     let viewControls = await waitForElement('#SpicyLyricsPage .ViewControls', 3000);
     const isSidebarLyrics = document.body.classList.contains('SpicySidebarLyrics__Active') ||
                             document.querySelector('#SpicyLyricsNPVCard') ||
-                            document.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+                            document.querySelector('.Root__right-sidebar #SpicyLyricsPage') ||
+                            isSidebarLyricsActive();
     if (!viewControls && isSidebarLyrics) {
-        viewControls = await waitForElement('.Root__right-sidebar #SpicyLyricsPage .ViewControls', 2000);
+        viewControls = await waitForElement('#SpicyLyricsNPVCard #SpicyLyricsPage .ViewControls, .Root__right-sidebar #SpicyLyricsPage .ViewControls', 2000);
     }
     if (!viewControls) viewControls = await waitForElement('.ViewControls', 2000);
 

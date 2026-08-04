@@ -5,6 +5,7 @@ import { clearLyricsCache } from './lyricsFetcher';
 import { getCurrentTrackUri } from './trackCache';
 import { injectStyles } from '../styles/main';
 import { registerSettings } from './settings';
+import { getResolvedTargetLanguage } from './settingsModel';
 import { initConnectionIndicator, cleanupConnectionIndicator, getConnectionState, refreshConnection, setConnectionIndicatorHidden } from './connectivity';
 import { startUpdateChecker, stopUpdateChecker, checkForUpdates, getUpdateInfo, VERSION, showPostUpdateChangelog } from './updater';
 import { shouldStartTranslationAfterSongChange } from './translationLifecycle';
@@ -176,8 +177,8 @@ export async function initialize(): Promise<void> {
             if (isSpicyLyricsOpen()) handleTranslateToggle();
         },
         setLanguage: (lang: string) => {
-            state.targetLanguage = lang;
             storage.set('target-language', lang);
+            state.targetLanguage = getResolvedTargetLanguage();
         },
         translate: translateCurrentLyrics,
         clearCache: clearTranslationCache,

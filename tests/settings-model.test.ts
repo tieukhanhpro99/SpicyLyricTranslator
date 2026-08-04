@@ -6,7 +6,8 @@ import {
     getSectionsForCategory,
     getSettingField,
     matchesSettingQuery,
-    readSettingValue
+    readSettingValue,
+    isSettingFieldVisible
 } from '../src/utils/settingsModel';
 
 const storageMap = new Map<string, string>();
@@ -68,4 +69,24 @@ test('Gemini model setting is a free text field and preserves custom pasted mode
     assert.equal(field?.type, 'text');
     assert.equal(field?.options, undefined);
     assert.equal(readSettingValue(field), 'models/gemini-2.5-flash-preview-05-20');
+});
+
+test('the regional variant toggle is hidden unless the provider and language both support it', () => {
+    storageMap.clear();
+
+    const field = SETTINGS_SCHEMA.find(entry => entry.id === 'language-variant')!;
+    assert.ok(field, 'language-variant setting must exist');
+    assert.equal(field.type, 'toggle');
+    assert.equal(field.defaultValue, false);
+
+    const setTargetLanguage = (code: string) => storageMap.set('spicy-lyric-translator:target-language', code);
+
+    setTargetLanguage('ca');
+    assert.equal(isSettingFieldVisible(field, 'openai'), true);
+    assert.equal(isSettingFieldVisible(field, 'anthropic'), true);
+    assert.equal(isSettingFieldVisible(field, 'google'), false, 'Google cannot honour a variant instruction');
+    assert.equal(isSettingFieldVisible(field, 'deepl'), false);
+
+    setTargetLanguage('es');
+    assert.equal(isSettingFieldVisible(field, 'openai'), false, 'Spanish has no variant to offer');
 });
