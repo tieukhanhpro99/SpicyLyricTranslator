@@ -150,7 +150,7 @@ function getActiveModelName(): string | undefined {
     }
 }
 
-function providerUsesWholeSongContext(): boolean {
+export function providerUsesWholeSongContext(): boolean {
     if (preferredApi === 'gemini' || preferredApi === 'openai' || preferredApi === 'grok' || preferredApi === 'anthropic') return true;
     return preferredApi === 'custom' && (customApiFormat === 'gemini' || customApiFormat === 'openai');
 }
@@ -462,6 +462,7 @@ function isLikelyCorsOrNetworkError(err: unknown): boolean {
 }
 
 const PROVIDER_REQUEST_TIMEOUT_MS = 30000;
+const GEMINI_REQUEST_TIMEOUT_MS = 90000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
     let timer: ReturnType<typeof setTimeout>;
@@ -557,13 +558,14 @@ async function postJsonProvider(
     body: unknown,
     headers: Record<string, string>,
     providerName: string,
-    options: { preferCosmos?: boolean; allowCosmosFallback?: boolean } = {}
+    options: { preferCosmos?: boolean; allowCosmosFallback?: boolean; timeoutMs?: number } = {}
 ): Promise<any> {
     const cosmos = getCosmosAsync();
     const allowCosmosFallback = options.allowCosmosFallback !== false;
+    const timeoutMs = options.timeoutMs ?? PROVIDER_REQUEST_TIMEOUT_MS;
 
     if (options.preferCosmos && cosmos?.post) {
-        return normalizeProviderJsonPayload(await withTimeout(cosmos.post(url, body, headers), PROVIDER_REQUEST_TIMEOUT_MS, providerName), providerName);
+        return normalizeProviderJsonPayload(await withTimeout(cosmos.post(url, body, headers), timeoutMs, providerName), providerName);
     }
 
     try {
@@ -571,12 +573,12 @@ async function postJsonProvider(
             method: 'POST',
             headers,
             body: JSON.stringify(body)
-        }, PROVIDER_REQUEST_TIMEOUT_MS, providerName);
+        }, timeoutMs, providerName);
 
         return await readProviderJsonResponse(response, providerName);
     } catch (err) {
         if (allowCosmosFallback && cosmos?.post && isLikelyCorsOrNetworkError(err)) {
-            return normalizeProviderJsonPayload(await withTimeout(cosmos.post(url, body, headers), PROVIDER_REQUEST_TIMEOUT_MS, providerName), providerName);
+            return normalizeProviderJsonPayload(await withTimeout(cosmos.post(url, body, headers), timeoutMs, providerName), providerName);
         }
         throw err;
     }
@@ -1110,6 +1112,7 @@ function buildSongLyricsTranslationInstruction(langName: string): string {
         '- Preserve every [[SLT_BATCH...]] marker exactly at the start of its corresponding translated line.',
         '- Do not translate, remove, reorder, duplicate, or invent markers.',
         '- Preserve line breaks and line order.',
+        `- Translate every source-language line into ${langName}, including lines in English or any other language mixed into the song. Leave a line unchanged only when it is already in ${langName} or contains only a proper name/title with no translatable meaning.`,
         '- Translate using full-song context, not isolated lines.',
         '- Keep repeated lines and choruses consistent.',
         '- Preserve names, titles, references, repetition, and emotional intensity.',
@@ -1233,7 +1236,7 @@ async function translateWithGemini(text: string, targetLang: string): Promise<{ 
             'Content-Type': 'application/json'
         },
         'Gemini',
-        { allowCosmosFallback: false }
+        { allowCosmosFallback: false, timeoutMs: GEMINI_REQUEST_TIMEOUT_MS }
     );
 
     recordApiUsage(extractGeminiUsage(data));
@@ -1808,6 +1811,35 @@ function parseBatchTextFallbacks(translatedText: string, expectedCount: number):
     return null;
 }
 
+function assertCompleteContextBatch(sourceLines: string[], translatedLines: string[], targetLang: string): void {
+    if (translatedLines.length !== sourceLines.length) {
+        throw new NonRetryableProviderError(
+            `Context batch mismatch: sent ${sourceLines.length}, got ${translatedLines.length}. Per-line fallback is disabled.`
+        );
+    }
+
+    for (let i = 0; i < sourceLines.length; i++) {
+        const source = normalizeTranslatedLine(sourceLines[i] || '');
+        if (!source) continue;
+
+        const translated = normalizeTranslatedLine(translatedLines[i] || '');
+        if (!translated) {
+            throw new NonRetryableProviderError(
+                `Context batch returned an empty translation at line ${i + 1}. No partial translation was used.`
+            );
+        }
+
+        if (
+            normalizeComparisonText(source) === normalizeComparisonText(translated) &&
+            shouldInvalidateIdentityTranslation(source, targetLang)
+        ) {
+            throw new NonRetryableProviderError(
+                `Context batch left a non-target-language line untranslated at line ${i + 1}. No partial translation was used.`
+            );
+        }
+    }
+}
+
 function providerSupportsParallelChunking(): boolean {
     if (preferredApi === 'openai' || preferredApi === 'gemini' || preferredApi === 'grok' || preferredApi === 'anthropic') {
         return true;
@@ -1870,10 +1902,14 @@ async function translateParallelChunkedBatch(
 ): Promise<{ translations: string[]; detectedLang?: string }> {
     const chunkCount = getParallelChunkCount(lines.length);
     const chunks = splitIntoChunks(lines, chunkCount);
+    const retryCount = providerUsesWholeSongContext() ? 0 : RATE_LIMIT.maxRetries;
 
     const chunkResults = await Promise.all(chunks.map(async chunk => {
         const { combinedText, markerNonce } = buildMarkedBatchPayload(chunk);
-        const result = await retryWithBackoff(() => translateText(combinedText, targetLang, sourceLang));
+        const result = await retryWithBackoff(
+            () => translateText(combinedText, targetLang, sourceLang),
+            retryCount
+        );
         const parsed =
             parseMarkedBatchResponse(result.translatedText, chunk.length, markerNonce) ||
             parseBatchTextFallbacks(result.translatedText, chunk.length);
@@ -2260,6 +2296,8 @@ async function translateLyricsInner(
     const sourceFingerprint = computeSourceLyricsFingerprint(lines);
     const lineLanguages = getConfidentLineLanguages(lines);
     const hasMixedSourceLanguages = lineLanguages.size > 1;
+    const requireWholeSongContext = providerUsesWholeSongContext();
+    const batchRetryCount = requireWholeSongContext ? 0 : RATE_LIMIT.maxRetries;
 
     if (!detectedSourceLang || detectedSourceLang === 'auto' || detectedSourceLang === 'unknown') {
         const inferred = inferDominantSourceLangFromLines(lines);
@@ -2333,8 +2371,6 @@ async function translateLyricsInner(
     const cachedResults: Map<number, TranslationResult> = new Map();
     const uncachedLines: { index: number; text: string }[] = [];
     const lineCacheSnapshot = storage.getJSON<TranslationCache>('translation-cache', {});
-    const requireWholeSongContext = providerUsesWholeSongContext();
-
     lines.forEach((line, index) => {
         if (!line.trim()) {
             cachedResults.set(index, {
@@ -2408,7 +2444,7 @@ async function translateLyricsInner(
             }
         }
 
-        if (!translatedLines && !hasMixedSourceLanguages && shouldUseParallelChunking(uncachedLines.length)) {
+        if (!translatedLines && (requireWholeSongContext || !hasMixedSourceLanguages) && shouldUseParallelChunking(uncachedLines.length)) {
             try {
                 const parallelResult = await translateParallelChunkedBatch(uncachedLines.map(l => l.text), targetLang, detectedSourceLang);
                 if (parallelResult.translations.length === uncachedLines.length) {
@@ -2422,9 +2458,12 @@ async function translateLyricsInner(
             }
         }
 
-        if (!translatedLines && !hasMixedSourceLanguages && providerHandlesMarkerBatch()) {
+        if (!translatedLines && (requireWholeSongContext || !hasMixedSourceLanguages) && providerHandlesMarkerBatch()) {
             const { combinedText, markerNonce } = buildMarkedBatchPayload(uncachedLines.map(l => l.text));
-            const result = await retryWithBackoff(() => translateText(combinedText, targetLang, detectedSourceLang));
+            const result = await retryWithBackoff(
+                () => translateText(combinedText, targetLang, detectedSourceLang),
+                batchRetryCount
+            );
             translatedLines =
                 parseMarkedBatchResponse(result.translatedText, uncachedLines.length, markerNonce) ||
                 parseBatchTextFallbacks(result.translatedText, uncachedLines.length);
@@ -2434,7 +2473,21 @@ async function translateLyricsInner(
             }
         }
 
-        if (!hasMixedSourceLanguages && (!translatedLines || translatedLines.length !== uncachedLines.length) && uncachedLines.length > 1 && providerHandlesMarkerBatch()) {
+        if (requireWholeSongContext && (!translatedLines || translatedLines.length !== uncachedLines.length)) {
+            throw new NonRetryableProviderError(
+                `Context batch mismatch: sent ${uncachedLines.length}, got ${translatedLines?.length ?? 0}. Per-line fallback is disabled.`
+            );
+        }
+
+        if (requireWholeSongContext && translatedLines) {
+            assertCompleteContextBatch(
+                uncachedLines.map(item => item.text),
+                translatedLines,
+                targetLang
+            );
+        }
+
+        if (!requireWholeSongContext && !hasMixedSourceLanguages && (!translatedLines || translatedLines.length !== uncachedLines.length) && uncachedLines.length > 1 && providerHandlesMarkerBatch()) {
             warn(`Primary batch parse failed for ${uncachedLines.length} lines, trying chunked batch mode (${BATCH_CHUNK_SIZE}/request)`);
             try {
                 const chunked = await translateChunkedBatch(uncachedLines.map(l => l.text), targetLang, BATCH_CHUNK_SIZE, detectedSourceLang);
@@ -2448,13 +2501,13 @@ async function translateLyricsInner(
             }
         }
 
-        if (hasMixedSourceLanguages && (!translatedLines || translatedLines.length !== uncachedLines.length)) {
+        if (!requireWholeSongContext && hasMixedSourceLanguages && (!translatedLines || translatedLines.length !== uncachedLines.length)) {
             const mixedResult = await translateMixedSourceChunks(uncachedLines, targetLang, detectedSourceLang);
             translatedLines = mixedResult.translations;
             detectedLang = mixedResult.detectedLang || 'mixed';
         }
 
-        if (!translatedLines || translatedLines.length !== uncachedLines.length) {
+        if (!requireWholeSongContext && (!translatedLines || translatedLines.length !== uncachedLines.length)) {
             warn(`Batch parsing unreliable for target ${targetLang}, translating line-by-line (${uncachedLines.length} lines)`);
             const perLineResults: string[] = [];
             for (const item of uncachedLines) {
@@ -2477,7 +2530,7 @@ async function translateLyricsInner(
             throw new Error(`Translation mismatch: Sent ${uncachedLines.length} lines, got ${translatedLines?.length ?? 0}.`);
         }
 
-        for (let i = 0; i < uncachedLines.length; i++) {
+        for (let i = 0; !requireWholeSongContext && i < uncachedLines.length; i++) {
             const item = uncachedLines[i];
             if (!item.text.trim()) continue;
             if (normalizeTranslatedLine(translatedLines[i] || '')) continue;
@@ -2507,7 +2560,9 @@ async function translateLyricsInner(
         for (const item of uncachedLines) {
             const existing = cachedResults.get(item.index);
             const initialTranslation = existing?.translatedText || item.text;
-            let repairedTranslation = await repairMixedLineTranslation(item.text, initialTranslation, targetLang);
+            let repairedTranslation = requireWholeSongContext
+                ? initialTranslation
+                : await repairMixedLineTranslation(item.text, initialTranslation, targetLang);
             let finalTranslation = normalizeTranslatedLine(repairedTranslation || '') || item.text;
 
             const sourceMatchesOutput = normalizeComparisonText(finalTranslation) === normalizeComparisonText(item.text);
@@ -2521,7 +2576,7 @@ async function translateLyricsInner(
                     unresolvedMixedLine
                 ));
 
-            if (suspiciousOutput) {
+            if (suspiciousOutput && !requireWholeSongContext) {
                 try {
                     const lineSourceLang = getLineSourceLangHint(item.text, targetLang, detectedSourceLang, hasMixedSourceLanguages);
                     const direct = await retryWithBackoff(() => translateText(item.text, targetLang, lineSourceLang), 1);

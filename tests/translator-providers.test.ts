@@ -212,7 +212,7 @@ test('LibreTranslate does not send internal batch markers to Google fallback', a
     );
 });
 
-test('a blank cell in a marker batch is re-translated instead of left in the source language', async () => {
+test('a blank Gemini batch cell rejects the partial batch without a follow-up request', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {
         geminiApiKey: 'gemini-key',
@@ -227,10 +227,11 @@ test('a blank cell in a marker batch is re-translated instead of left in the sou
     ]);
 
     const markerCalls: string[] = [];
-    const singleCalls: string[] = [];
+    const calls: string[] = [];
     (globalThis as any).fetch = async (_url: string, init?: RequestInit) => {
         const body = JSON.parse(String(init?.body ?? '{}'));
         const promptText: string = body.contents[0].parts[0].text;
+        calls.push(promptText);
         const markedLines = promptText.split('\n').filter(line => line.includes('[[SLT_BATCH_'));
 
         if (markedLines.length > 1) {
@@ -243,18 +244,54 @@ test('a blank cell in a marker batch is re-translated instead of left in the sou
             return jsonResponse({ candidates: [{ content: { parts: [{ text: out.join('\n') }] } }] });
         }
 
-        const source = promptText.split('\n').pop() ?? promptText;
-        singleCalls.push(source);
-        return jsonResponse({ candidates: [{ content: { parts: [{ text: translationMap.get(source) ?? source }] } }] });
+        throw new Error('Unexpected follow-up Gemini request');
     };
 
     const { translateLyrics } = require('../src/utils/translator') as { translateLyrics: (lines: string[], targetLang: string) => Promise<any[]> };
     const result = await translateLyrics(sourceLines, 'en');
 
-    assert.equal(markerCalls.length >= 1, true);
-    assert.deepEqual(result.map(item => item.translatedText), ['Hello', 'Goodbye', 'Thank you']);
-    assert.equal(result.every(item => item.wasTranslated), true);
-    assert.ok(singleCalls.includes('さようなら'));
+    assert.equal(markerCalls.length, 1);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(result.map(item => item.translatedText), sourceLines);
+    assert.equal(result.every(item => item.wasTranslated === false), true);
+});
+
+test('Gemini rejects a mixed-language batch that leaves a confident foreign line untranslated', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.5-flash',
+        maxParallelChunks: 1
+    } as any);
+
+    const sourceLines = [
+        '君と一緒に歌いたい',
+        'I want to sing with you tonight',
+        'Mình sẽ luôn ở bên nhau'
+    ];
+    let calls = 0;
+    (globalThis as any).fetch = async (_url: string, init?: RequestInit) => {
+        calls++;
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        const prompt: string = body.contents[0].parts[0].text;
+        const markedLines = prompt.split('\n').filter(line => line.includes('[[SLT_BATCH_'));
+        const output = markedLines.map((line, index) => {
+            const marker = line.match(/\[\[SLT_BATCH_[^\]]*\]\]/)?.[0] ?? '';
+            const source = line.replace(/\[\[SLT_BATCH_[^\]]*\]\]/, '');
+            if (index === 0) return `${marker}Tôi muốn hát cùng bạn`;
+            return `${marker}${source}`;
+        }).join('\n');
+        return jsonResponse({ candidates: [{ content: { parts: [{ text: output }] } }] });
+    };
+
+    const { translateLyrics } = require('../src/utils/translator') as {
+        translateLyrics: (lines: string[], targetLang: string) => Promise<any[]>;
+    };
+    const result = await translateLyrics(sourceLines, 'vi');
+
+    assert.equal(calls, 1);
+    assert.deepEqual(result.map(item => item.translatedText), sourceLines);
+    assert.equal(result.every(item => item.wasTranslated === false), true);
 });
 
 test('LibreTranslate never receives internal batch markers, even after array batch fails', async () => {
@@ -885,6 +922,7 @@ test('Gemini uses context-aware song lyrics prompt with strict marker rules', as
     assert.match(prompt, /do not invent missing story details/);
     assert.match(prompt, /Preserve every \[\[SLT_BATCH\.\.\.\]\] marker exactly at the start of its corresponding translated line/);
     assert.match(prompt, /Do not translate, remove, reorder, duplicate, or invent markers/);
+    assert.match(prompt, /Translate every source-language line into Vietnamese, including lines in English or any other language mixed into the song/);
     assert.match(prompt, /Make the translation natural and lyrical in Vietnamese, while preserving meaning/);
     assert.doesNotMatch(prompt, /Translate the following lyrics to Vietnamese/);
 });
@@ -937,6 +975,62 @@ test('Gemini accepts a complete code-fenced batch response without sending chunk
 
     assert.equal(calls.length, 1);
     assert.deepEqual(result.map(item => item.translatedText), translatedLines);
+});
+
+test('Gemini incomplete whole-song response does not fan out into chunk or per-line requests', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.5-flash-lite',
+        maxParallelChunks: '1'
+    } as any);
+
+    const sourceLines = [
+        'First line carries the setup',
+        'Second line continues the story',
+        'Third line resolves the chorus'
+    ];
+    const calls: FetchCall[] = [];
+    (globalThis as any).fetch = async (url: string, init?: RequestInit) => {
+        calls.push({ url, init });
+        const prompt = JSON.parse(String(init?.body)).contents[0].parts[0].text as string;
+        const marker = prompt.match(/\[\[SLT_BATCH_[^\]]+\]\]/)?.[0] || '';
+        return jsonResponse({
+            candidates: [{ content: { parts: [{ text: `${marker}Only one translated line` }] } }]
+        });
+    };
+
+    const { translateLyrics } = require('../src/utils/translator') as {
+        translateLyrics: (lines: string[], targetLang: string) => Promise<any[]>;
+    };
+    const result = await translateLyrics(sourceLines, 'vi');
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(result.map(item => item.translatedText), sourceLines);
+});
+
+test('Gemini whole-song network failure is not retried or expanded into more requests', async () => {
+    resetState();
+    setPreferredApi('gemini', undefined, {
+        geminiApiKey: 'gemini-key',
+        geminiModel: 'gemini-3.5-flash-lite',
+        maxParallelChunks: '1'
+    } as any);
+
+    const sourceLines = ['One complete verse', 'One complete chorus'];
+    let calls = 0;
+    (globalThis as any).fetch = async () => {
+        calls++;
+        throw new TypeError('network request did not complete');
+    };
+
+    const { translateLyrics } = require('../src/utils/translator') as {
+        translateLyrics: (lines: string[], targetLang: string) => Promise<any[]>;
+    };
+    const result = await translateLyrics(sourceLines, 'vi');
+
+    assert.equal(calls, 1);
+    assert.deepEqual(result.map(item => item.translatedText), sourceLines);
 });
 
 test('Gemini splits large songs into parallel chunks instead of one slow batch', async () => {
@@ -1069,7 +1163,7 @@ test('maxParallelChunks allows up to 6 concurrent Gemini requests', async () => 
     assert.deepEqual(result.map(item => item.translatedText), expected);
 });
 
-test('mixed-language songs translate each language group with parallel chunks', async () => {
+test('mixed-language songs preserve source order across configured context chunks', async () => {
     resetState();
     setPreferredApi('gemini', undefined, {
         geminiApiKey: 'gemini-key',
@@ -1098,7 +1192,7 @@ test('mixed-language songs translate each language group with parallel chunks', 
     const { translateLyrics } = require('../src/utils/translator') as { translateLyrics: (lines: string[], targetLang: string) => Promise<any[]> };
     const result = await translateLyrics(sourceLines, 'en');
 
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 2);
     assert.deepEqual(result.map(item => item.translatedText), expected);
 });
 
@@ -1124,7 +1218,9 @@ test('mixed Japanese, English, and Vietnamese lyrics keep every translated short
     ];
     const translations = new Map(sourceLines.map((line, index) => [line, expected[index]]));
 
+    let calls = 0;
     (globalThis as any).fetch = async (_url: string, init?: RequestInit) => {
+        calls++;
         const body = JSON.parse(String(init?.body ?? '{}'));
         const prompt: string = body.contents[0].parts[0].text;
         const markedLines = prompt.split('\n').filter(line => line.includes('[[SLT_BATCH_'));
@@ -1149,6 +1245,7 @@ test('mixed Japanese, English, and Vietnamese lyrics keep every translated short
     };
     const results = await translateLyrics(sourceLines, 'vi');
 
+    assert.equal(calls, 1, 'mixed-language context translation should keep the whole song in one request');
     assert.deepEqual(results.map(item => item.translatedText), expected);
     assert.equal(results[2].wasTranslated, true, 'short English line must not be reverted to its source text');
     assert.equal(results[3].wasTranslated, false, 'line already in Vietnamese must be passed through');

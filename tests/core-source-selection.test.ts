@@ -4,6 +4,8 @@ import type { LyricLineData } from '../src/utils/lyricsFetcher';
 import type {
     isRomanizationActive as IsRomanizationActive,
     needsRomanizationCacheRepair as NeedsRomanizationCacheRepair,
+    claimTranslationAttempt as ClaimTranslationAttempt,
+    onSpicyLyricsClose as OnSpicyLyricsClose,
     resolveTranslationSourceLines as ResolveTranslationSourceLines,
     translateCurrentLyrics as TranslateCurrentLyrics
 } from '../src/utils/core';
@@ -19,9 +21,11 @@ import type {
     querySelector: () => null
 };
 
-const { isRomanizationActive, needsRomanizationCacheRepair, resolveTranslationSourceLines, translateCurrentLyrics } = require('../src/utils/core') as {
+const { isRomanizationActive, needsRomanizationCacheRepair, claimTranslationAttempt, onSpicyLyricsClose, resolveTranslationSourceLines, translateCurrentLyrics } = require('../src/utils/core') as {
     isRomanizationActive: typeof IsRomanizationActive;
     needsRomanizationCacheRepair: typeof NeedsRomanizationCacheRepair;
+    claimTranslationAttempt: typeof ClaimTranslationAttempt;
+    onSpicyLyricsClose: typeof OnSpicyLyricsClose;
     resolveTranslationSourceLines: typeof ResolveTranslationSourceLines;
     translateCurrentLyrics: typeof TranslateCurrentLyrics;
 };
@@ -314,3 +318,22 @@ function fakeLine(text: string): Element {
         querySelectorAll: () => []
     } as unknown as Element;
 }
+
+test('duplicate automatic translation attempts for the same lyric signature are suppressed', () => {
+    const key = `spotify:track:duplicate\u241Fvi\u241Fgemini\u241Foriginal\u241F${Date.now()}`;
+    const changedKey = `${key}:changed`;
+
+    assert.equal(claimTranslationAttempt(key), true);
+    assert.equal(claimTranslationAttempt(key), false);
+    assert.equal(claimTranslationAttempt(changedKey), true);
+});
+
+test('switching lyric views does not cancel an active translation for the same track', () => {
+    state.isEnabled = true;
+    state.isTranslating = true;
+
+    onSpicyLyricsClose();
+
+    assert.equal(state.isTranslating, true);
+    state.isTranslating = false;
+});

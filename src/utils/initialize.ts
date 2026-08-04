@@ -22,6 +22,7 @@ import {
     updateButtonState,
     setupKeyboardShortcut,
     setupViewModeObserver,
+    cancelActiveTranslationRun,
     cleanupCoreRuntime
 } from './core';
 
@@ -128,7 +129,7 @@ export async function initialize(): Promise<void> {
             setTimeout(() => {
                 lastPlayerTrackUri = getCurrentTrackUri();
             }, 1200);
-            state.isTranslating = false;
+            cancelActiveTranslationRun();
             state.translatedLyrics.clear();
             state._translationsByIndex = undefined;
             state._qualityByIndex = undefined;
@@ -168,6 +169,7 @@ export async function initialize(): Promise<void> {
         disable: () => {
             state.isEnabled = false;
             storage.set('translation-enabled', 'false');
+            cancelActiveTranslationRun();
             removeTranslations();
         },
         toggle: () => {

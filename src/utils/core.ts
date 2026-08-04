@@ -1,7 +1,7 @@
 import { state, TranslationQualityMeta } from './state';
 import { Icons } from './icons';
 import { storage } from './storage';
-import { translateLyrics, isOffline, getCacheStats } from './translator';
+import { translateLyrics, isOffline, getCacheStats, providerUsesWholeSongContext } from './translator';
 import { getCurrentTrackUri, getTrackCache } from './trackCache';
 import {
     enableOverlay,
@@ -44,6 +44,24 @@ let contentTranslation = new Map<string, string>();
 let contentQuality = new Map<string, TranslationQualityMeta>();
 let coveredKeys = new Set<string>();
 let fillGapsInFlight = false;
+let translationRunGeneration = 0;
+let lastTranslationAttemptKey: string | null = null;
+
+function clearTranslationAttemptGuard(): void {
+    lastTranslationAttemptKey = null;
+}
+
+export function claimTranslationAttempt(key: string): boolean {
+    if (lastTranslationAttemptKey === key) return false;
+    lastTranslationAttemptKey = key;
+    return true;
+}
+
+export function cancelActiveTranslationRun(): void {
+    translationRunGeneration++;
+    state.isTranslating = false;
+    fillGapsInFlight = false;
+}
 
 interface SkippedTranslationState {
     trackUri: string | null;
@@ -225,10 +243,16 @@ export function isRomanizationActive(): boolean {
 }
 
 export function isSpicyLyricsOpen(): boolean {
+    // Spicy Lyrics 6.x renders sidebar lyrics as a Now-Playing card
+    // (`#SpicyLyricsNPVCard`) hosting its own `#SpicyLyricsPage` inside
+    // `.Root__right-sidebar`; 5.x used a legacy `SpicySidebarLyrics__Active`
+    // body class. We accept both so the extension works across versions.
     if (document.querySelector('#SpicyLyricsPage') ||
         document.querySelector('.spicy-pip-wrapper #SpicyLyricsPage') ||
         document.querySelector('.Cinema--Container') ||
         document.querySelector('.spicy-lyrics-cinema') ||
+        document.querySelector('#SpicyLyricsNPVCard') ||
+        document.querySelector('.Root__right-sidebar #SpicyLyricsPage') ||
         document.body.classList.contains('SpicySidebarLyrics__Active')) {
         return true;
     }
@@ -250,9 +274,13 @@ export function getLyricsContent(): HTMLElement | null {
         if (pipContent) return pipContent as HTMLElement;
     }
 
-    if (document.body.classList.contains('SpicySidebarLyrics__Active')) {
+    const isSidebarLyrics = document.body.classList.contains('SpicySidebarLyrics__Active') ||
+                            Boolean(document.querySelector('#SpicyLyricsNPVCard')) ||
+                            Boolean(document.querySelector('.Root__right-sidebar #SpicyLyricsPage'));
+    if (isSidebarLyrics) {
         const sidebarContent = document.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContainer .LyricsContent') ||
-                              document.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContent');
+                              document.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContent') ||
+                              document.querySelector('#SpicyLyricsNPVCard .LyricsContent');
         if (sidebarContent) return sidebarContent as HTMLElement;
     }
 
@@ -387,7 +415,11 @@ function insertTranslateButtonIntoDocument(doc: Document): void {
     let viewControls = doc.querySelector('#SpicyLyricsPage .ContentBox .ViewControls') ||
                        doc.querySelector('#SpicyLyricsPage .ViewControls');
 
-    if (!viewControls && doc.body.classList.contains('SpicySidebarLyrics__Active')) {
+    if (!viewControls && (
+        doc.body.classList.contains('SpicySidebarLyrics__Active') ||
+        doc.querySelector('#SpicyLyricsNPVCard') ||
+        doc.querySelector('.Root__right-sidebar #SpicyLyricsPage')
+    )) {
         viewControls = doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .ViewControls');
     }
 
@@ -414,6 +446,14 @@ function insertTranslateButtonIntoDocument(doc: Document): void {
 }
 
 export async function handleTranslateToggle(): Promise<void> {
+    if (state.isTranslating && state.isEnabled) {
+        state.isEnabled = false;
+        storage.set('translation-enabled', 'false');
+        cancelActiveTranslationRun();
+        updateButtonState();
+        removeTranslations();
+        return;
+    }
     if (state.isTranslating) return;
 
     state.isEnabled = !state.isEnabled;
@@ -422,8 +462,10 @@ export async function handleTranslateToggle(): Promise<void> {
     updateButtonState();
 
     if (state.isEnabled) {
+        clearTranslationAttemptGuard();
         await translateCurrentLyrics();
     } else {
+        cancelActiveTranslationRun();
         removeTranslations();
     }
 }
@@ -513,7 +555,10 @@ function getLyricsLines(): NodeListOf<Element> {
         const lyricsContent = doc.querySelectorAll(`#SpicyLyricsPage .LyricsContent .line${excludeSelector}`);
         if (lyricsContent.length > 0) return lyricsContent;
 
-        if (doc.body.classList.contains('SpicySidebarLyrics__Active')) {
+        const isSidebarDoc = doc.body.classList.contains('SpicySidebarLyrics__Active') ||
+                             !!doc.querySelector('#SpicyLyricsNPVCard') ||
+                             !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+        if (isSidebarDoc) {
             const sidebar = doc.querySelectorAll(`.Root__right-sidebar #SpicyLyricsPage .line${excludeSelector}`);
             if (sidebar.length > 0) return sidebar;
         }
@@ -666,7 +711,12 @@ async function deleteCurrentSpicyLyricsCacheEntry(trackUri: string): Promise<voi
 
 function refreshSpicyLyricsCurrentTrack(): boolean {
     try {
-        const execute = (globalThis as any)._spicy_lyrics?.execute;
+        // Spicy Lyrics ≤5.x exposed a global `execute('reset-ttml')` command
+        // (via GlobalExecute.ts) to purge the in-memory lyric state and
+        // re-apply fresh data. Spicy Lyrics 6.x removed it — only invoke the
+        // hook when it actually exists so we never crash on newer versions.
+        const spicyScope = (globalThis as any)._spicy_lyrics;
+        const execute = spicyScope?.execute;
         if (typeof execute === 'function') {
             execute('reset-ttml');
             return true;
@@ -691,8 +741,15 @@ async function repairMissingRomanizationCacheIfNeeded(): Promise<boolean> {
     await deleteCurrentSpicyLyricsCacheEntry(currentTrackUri);
 
     const refreshed = refreshSpicyLyricsCurrentTrack();
-    if (refreshed && state.showNotifications && Spicetify.showNotification) {
-        Spicetify.showNotification('Repairing Spicy Lyrics romanization cache...');
+    if (state.showNotifications && Spicetify.showNotification) {
+        // On Spicy Lyrics 6.x the `reset-ttml` hook no longer exists, so a
+        // fully automatic re-fetch isn't possible — tell the user what's
+        // needed to pick up the freshly-cleared cache.
+        Spicetify.showNotification(
+            refreshed
+                ? 'Repairing Spicy Lyrics romanization cache...'
+                : 'Spicy Lyrics cache cleared — switch songs or reload to re-fetch lyrics'
+        );
     }
     return refreshed;
 }
@@ -733,6 +790,11 @@ export async function translateCurrentLyrics(): Promise<void> {
     if (!state.isEnabled || state.isTranslating) return;
 
     const currentTrackUri = getCurrentTrackUri();
+    const runGeneration = ++translationRunGeneration;
+    const isCurrentRun = (): boolean =>
+        runGeneration === translationRunGeneration &&
+        state.isEnabled &&
+        (!currentTrackUri || getCurrentTrackUri() === currentTrackUri);
     const currentRomanization = isRomanizationActive();
     setRomanizationDisplayEnabled(currentRomanization);
     const romanizationChanged = lastTranslatedRomanizationState !== null && currentRomanization !== lastTranslatedRomanizationState;
@@ -831,6 +893,7 @@ export async function translateCurrentLyrics(): Promise<void> {
         let cachedSourceLanguage: string | undefined;
         try {
             const apiResult = await fetchLyricsFromAPI();
+            if (!isCurrentRun()) return;
             if (apiResult && apiResult.lines.length > 0) {
                 if (romanizationOn) {
                     await improveJapaneseRomanization(apiResult.lineData, apiResult.language);
@@ -978,7 +1041,18 @@ export async function translateCurrentLyrics(): Promise<void> {
         if (nonEmptyTexts.length === 0) {
             return;
         }
+        if (!isCurrentRun()) return;
         const sourceLyricsKey = buildLyricsKey(nonEmptyTexts);
+        const translationAttemptKey = [
+            currentTrackUri || '',
+            state.targetLanguage,
+            state.preferredApi,
+            romanizationOn ? 'romanized' : 'original',
+            sourceLyricsKey
+        ].join('\u241F');
+        if (!claimTranslationAttempt(translationAttemptKey)) {
+            return;
+        }
 
         if (apiLanguage) {
             apiLanguage = refineChineseLanguageCode(apiLanguage, nonEmptyTexts);
@@ -1027,7 +1101,14 @@ export async function translateCurrentLyrics(): Promise<void> {
             const nonTargetDominates = classifiableLineCount > 0 &&
                 nonTargetIndexes.length >= Math.max(2, Math.ceil(classifiableLineCount * 0.35));
 
-            if (nonTargetDominates) {
+            if (providerUsesWholeSongContext() && nonTargetIndexes.length > 0) {
+                translations = await translateLyrics(
+                    lineTexts,
+                    state.targetLanguage,
+                    currentTrackUri || undefined,
+                    undefined
+                );
+            } else if (nonTargetDominates) {
                 translations = await translateLyrics(
                     lineTexts,
                     state.targetLanguage,
@@ -1087,7 +1168,7 @@ export async function translateCurrentLyrics(): Promise<void> {
             translations = await translateLyrics(lineTexts, state.targetLanguage, currentTrackUri || undefined, state.detectedLanguage || undefined);
         }
 
-        if (!state.isEnabled) {
+        if (!isCurrentRun()) {
             return;
         }
 
@@ -1321,8 +1402,10 @@ export async function translateCurrentLyrics(): Promise<void> {
         setButtonErrorState(true);
         setTimeout(() => setButtonErrorState(false), 3000);
     } finally {
-        state.isTranslating = false;
-        if (buttonsLoading) {
+        if (runGeneration === translationRunGeneration) {
+            state.isTranslating = false;
+        }
+        if (buttonsLoading && runGeneration === translationRunGeneration) {
             restoreButtonState();
         }
     }
@@ -1456,6 +1539,7 @@ function scheduleTranslationReapply(trackUri: string | null): void {
 
 async function fillVisibleGaps(): Promise<void> {
     if (!state.isEnabled || state.isTranslating || fillGapsInFlight) return;
+    if (providerUsesWholeSongContext()) return;
     if (isRomanizationActive()) return;
     if (coveredKeys.size === 0 && contentTranslation.size === 0) return;
 
@@ -1515,6 +1599,8 @@ async function fillVisibleGaps(): Promise<void> {
 }
 
 export function forceRetranslate(): void {
+    cancelActiveTranslationRun();
+    clearTranslationAttemptGuard();
     lastSkippedTranslation = null;
     lastSkipNotifyKey = null;
     lastTranslatedRomanizationState = null;
@@ -1710,7 +1796,10 @@ export function setupLyricsObserver(): void {
 
 export async function onSpicyLyricsOpen(): Promise<void> {
     let viewControls = await waitForElement('#SpicyLyricsPage .ViewControls', 3000);
-    if (!viewControls && document.body.classList.contains('SpicySidebarLyrics__Active')) {
+    const isSidebarLyrics = document.body.classList.contains('SpicySidebarLyrics__Active') ||
+                            document.querySelector('#SpicyLyricsNPVCard') ||
+                            document.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+    if (!viewControls && isSidebarLyrics) {
         viewControls = await waitForElement('.Root__right-sidebar #SpicyLyricsPage .ViewControls', 2000);
     }
     if (!viewControls) viewControls = await waitForElement('.ViewControls', 2000);
@@ -1748,7 +1837,6 @@ export function onSpicyLyricsClose(): void {
         rerenderDebounceTimer = null;
     }
     clearReapplyTimers();
-    state.isTranslating = false;
     if (lyricsObserver) {
         lyricsObserver.disconnect();
         lyricsObserver = null;
@@ -1872,6 +1960,8 @@ export function setupKeyboardShortcut(): void {
 }
 
 export function cleanupCoreRuntime(): void {
+    cancelActiveTranslationRun();
+    clearTranslationAttemptGuard();
     if (viewControlsObserver) {
         viewControlsObserver.disconnect();
         viewControlsObserver = null;
@@ -1898,5 +1988,4 @@ export function cleanupCoreRuntime(): void {
     observedLyricsContent = null;
     lastKnownRomanizationState = null;
     lastTranslatedRomanizationState = null;
-    state.isTranslating = false;
 }

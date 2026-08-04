@@ -357,7 +357,10 @@ function getLyricLines(doc: Document): NodeListOf<Element> {
     const scrollContainerLines = doc.querySelectorAll(`#SpicyLyricsPage .SpicyLyricsScrollContainer .line${excludeSelector}`);
     if (scrollContainerLines.length > 0) return scrollContainerLines;
 
-    if (doc.body?.classList?.contains('SpicySidebarLyrics__Active')) {
+    const isSidebarDoc = doc.body?.classList?.contains('SpicySidebarLyrics__Active') ||
+                         !!doc.querySelector('#SpicyLyricsNPVCard') ||
+                         !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+    if (isSidebarDoc) {
         const sidebarLines = doc.querySelectorAll(`.Root__right-sidebar #SpicyLyricsPage .line${excludeSelector}`);
         if (sidebarLines.length > 0) return sidebarLines;
     }
@@ -419,9 +422,13 @@ function findLyricsContainer(doc: Document): Element | null {
     const scrollContainer = doc.querySelector('#SpicyLyricsPage .SpicyLyricsScrollContainer');
     if (scrollContainer) return scrollContainer;
 
-    if (doc.body?.classList?.contains('SpicySidebarLyrics__Active')) {
+    const isSidebarDoc = doc.body?.classList?.contains('SpicySidebarLyrics__Active') ||
+                         !!doc.querySelector('#SpicyLyricsNPVCard') ||
+                         !!doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
+    if (isSidebarDoc) {
         const sidebarContainer = doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .SpicyLyricsScrollContainer') ||
-                                 doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContent');
+                                 doc.querySelector('.Root__right-sidebar #SpicyLyricsPage .LyricsContent') ||
+                                 doc.querySelector('#SpicyLyricsNPVCard .LyricsContent');
         if (sidebarContainer) return sidebarContainer;
     }
 
@@ -2135,7 +2142,11 @@ function setupActiveLineObserver(doc: Document): void {
 
         let lyricsContainer = findLyricsContainer(doc);
 
-        if (!lyricsContainer && doc.body.classList.contains('SpicySidebarLyrics__Active')) {
+        if (!lyricsContainer && (
+            doc.body.classList.contains('SpicySidebarLyrics__Active') ||
+            doc.querySelector('#SpicyLyricsNPVCard') ||
+            doc.querySelector('.Root__right-sidebar #SpicyLyricsPage')
+        )) {
             lyricsContainer = doc.querySelector('.Root__right-sidebar #SpicyLyricsPage');
         }
 

@@ -314,7 +314,9 @@ async function readSpicyLyricsCache(trackId: string): Promise<LyricsData | null>
             }
 
             const content = item.Content;
-            if (!content || content.Value === 'NO_LYRICS') {
+            // Spicy Lyrics 6.x stores the no-lyrics sentinel as a plain string
+            // (`Content: "NO_LYRICS"`), older versions used `{ Value: "NO_LYRICS" }`.
+            if (content === 'NO_LYRICS' || content?.Value === 'NO_LYRICS' || !content) {
                 continue;
             }
 
