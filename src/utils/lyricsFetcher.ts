@@ -4,6 +4,9 @@ import { normalizeLanguageCode } from './languageDetection';
 const SPICY_API_HOST = 'api.spicylyrics.org';
 const SPICY_QUERY_PATH = '/query';
 const SPICY_LYRICS_CACHE_NAMES = ['SpicyLyrics_LyricsStore_g1', 'SpicyLyrics_LyricsStore'];
+const SPICY_LYRICS_DB_NAME = 'spicylyrics';
+const SPICY_LYRICS_DB_STORE = 'lyricsStore';
+const SPICY_LYRICS_G1_CACHE_VERSION = 1;
 const MAX_CAPTURE_CACHE_ENTRIES = 50;
 
 interface SyllableData {
@@ -96,6 +99,7 @@ type JSONPrimitive = string | number | boolean | null;
 type JSONValue = JSONPrimitive | JSONValue[] | { [key: string]: JSONValue };
 
 const captureCache = new Map<string, LyricsData>();
+const localLyricsCaptureCache = new Map<string, LyricsData>();
 let interceptorInstalled = false;
 
 function getRomanizedText(value: { RomanizedText?: string; TransliteratedText?: string } | null | undefined): string | undefined {
@@ -254,18 +258,32 @@ function normalizeCapturedLyricsData(data: unknown): LyricsData | null {
     return isLyricsData(unpacked) ? unpacked : null;
 }
 
-function extractTrackIdFromBody(bodyText: string | null | undefined): string | null {
-    if (!bodyText) return null;
+interface CaptureRequestContext {
+    trackId: string | null;
+    parseTtmlOperationIds: Set<string>;
+}
+
+function extractCaptureContextFromBody(bodyText: string | null | undefined): CaptureRequestContext {
+    const context: CaptureRequestContext = {
+        trackId: null,
+        parseTtmlOperationIds: new Set<string>(),
+    };
+    if (!bodyText) return context;
     try {
         const parsed = JSON.parse(bodyText);
         const queries = parsed?.queries;
-        if (!Array.isArray(queries)) return null;
-        for (const q of queries) {
-            const id = q?.variables?.id;
-            if (typeof id === 'string' && id.length > 0) return id;
+        if (!Array.isArray(queries)) return context;
+        for (let i = 0; i < queries.length; i++) {
+            const query = queries[i];
+            if (query?.operation === 'lyrics') {
+                const id = query?.variables?.id;
+                if (typeof id === 'string' && id.length > 0) context.trackId = id;
+            } else if (query?.operation === 'parseTTML') {
+                context.parseTtmlOperationIds.add(String(i));
+            }
         }
     } catch {}
-    return null;
+    return context;
 }
 
 function processCapturedResponse(trackId: string, payload: QueryResponse): void {
@@ -278,6 +296,28 @@ function processCapturedResponse(trackId: string, payload: QueryResponse): void 
 
         if (lyricsData) {
             setCaptureCache(trackId, lyricsData);
+            return;
+        }
+    }
+}
+
+function processCapturedLocalLyrics(
+    trackUri: string | null,
+    operationIds: Set<string>,
+    payload: QueryResponse
+): void {
+    if (!trackUri || operationIds.size === 0) return;
+
+    const queries = Array.isArray(payload?.queries) ? payload.queries : [];
+    for (const query of queries) {
+        if (!operationIds.has(String(query?.operationId))) continue;
+        const result = query?.result;
+        if (!result || result.httpStatus !== 200) continue;
+
+        const data = result.data?.Result ?? result.data?.result ?? result.data;
+        const lyricsData = normalizeCapturedLyricsData(data);
+        if (lyricsData) {
+            localLyricsCaptureCache.set(trackUri, lyricsData);
             return;
         }
     }
@@ -306,6 +346,17 @@ async function readSpicyLyricsCache(trackId: string): Promise<LyricsData | null>
             }
 
             if (!item || typeof item !== 'object' || item.Value === 'NO_LYRICS') {
+                continue;
+            }
+
+            // Mirror Spicy Lyrics 6.3.x's g1 cache contract. Reading a stale
+            // envelope that Spicy Lyrics itself rejects can feed us a shape from
+            // an older schema and silently corrupt source-line alignment.
+            if (
+                cacheName === 'SpicyLyrics_LyricsStore_g1' &&
+                typeof item.CacheVersion === 'number' &&
+                item.CacheVersion !== SPICY_LYRICS_G1_CACHE_VERSION
+            ) {
                 continue;
             }
 
@@ -365,23 +416,36 @@ function installFetchInterceptor(): void {
             return origFetch(input as any, init);
         }
 
-        let trackId: string | null = null;
+        let captureContext: CaptureRequestContext = {
+            trackId: null,
+            parseTtmlOperationIds: new Set<string>(),
+        };
         try {
             if (typeof init?.body === 'string') {
-                trackId = extractTrackIdFromBody(init.body);
+                captureContext = extractCaptureContextFromBody(init.body);
             } else if (input instanceof Request) {
                 const cloned = input.clone();
                 const bodyText = await cloned.text();
-                trackId = extractTrackIdFromBody(bodyText);
+                captureContext = extractCaptureContextFromBody(bodyText);
             }
         } catch {}
 
+        // LocalLyricsManager resolves uploaded TTML through the same query API,
+        // but the request has no Spotify id. Bind it to the URI that was current
+        // when the request started so local tracks with equal durations cannot
+        // collide in the Translator cache.
+        const localTrackUri = captureContext.parseTtmlOperationIds.size > 0
+            ? getCurrentTrackUri()
+            : null;
+
         const response = await origFetch(input as any, init);
 
-        if (trackId) {
-            const capturedTrackId = trackId;
+        if (captureContext.trackId || captureContext.parseTtmlOperationIds.size > 0) {
+            const capturedTrackId = captureContext.trackId;
+            const parseTtmlOperationIds = captureContext.parseTtmlOperationIds;
             response.clone().json().then((data: QueryResponse) => {
-                processCapturedResponse(capturedTrackId, data);
+                if (capturedTrackId) processCapturedResponse(capturedTrackId, data);
+                processCapturedLocalLyrics(localTrackUri, parseTtmlOperationIds, data);
             }).catch(() => {});
         }
 
@@ -411,12 +475,18 @@ async function waitForCapture(trackId: string, timeoutMs: number = 8000, pollMs:
 }
 
 function getCurrentTrackId(): string | null {
+    const uri = getCurrentTrackUri();
+    if (uri) {
+        const parts = uri.split(':');
+        return parts[parts.length - 1] || null;
+    }
+    return null;
+}
+
+function getCurrentTrackUri(): string | null {
     try {
         const uri = (globalThis as any).Spicetify?.Player?.data?.item?.uri;
-        if (uri && typeof uri === 'string') {
-            const parts = uri.split(':');
-            return parts[parts.length - 1] || null;
-        }
+        if (uri && typeof uri === 'string') return uri;
     } catch (e) {}
     return null;
 }
@@ -428,6 +498,155 @@ function getTrackIdFromUri(trackUri: string): string | null {
 
     const parts = trackUri.split(':');
     return parts[parts.length - 1] || null;
+}
+
+function normalizeLocalLyricsResult(value: unknown): LyricsData | null {
+    if (!value || typeof value !== 'object') return normalizeCapturedLyricsData(value);
+    const record = value as Record<string, unknown>;
+    return normalizeCapturedLyricsData(record.Result ?? record.result ?? value);
+}
+
+async function getLocalLyricsFromPublicApi(trackUri: string): Promise<LyricsData | null> {
+    try {
+        const root = (globalThis as any).SpicyLyrics ??
+            (typeof window !== 'undefined' ? (window as any).SpicyLyrics : undefined);
+        const manager = root?.db?.objectStores?.lyricsStore?.manager;
+        if (typeof manager?.get !== 'function') return null;
+        return normalizeLocalLyricsResult(await manager.get(trackUri));
+    } catch (err) {
+        warn('Failed to read Local Lyrics through the Spicy Lyrics API:', err);
+        return null;
+    }
+}
+
+function readLocalTtmlFromIndexedDb(trackUri: string): Promise<string | null> {
+    if (typeof indexedDB === 'undefined' || typeof indexedDB.open !== 'function') {
+        return Promise.resolve(null);
+    }
+
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = (value: string | null): void => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+
+        try {
+            const openRequest = indexedDB.open(SPICY_LYRICS_DB_NAME);
+            openRequest.onupgradeneeded = () => {
+                // Spicy Lyrics has not created its database yet. Abort so this
+                // compatibility read never creates an empty lookalike database.
+                try { openRequest.transaction?.abort(); } catch {}
+                finish(null);
+            };
+            openRequest.onerror = () => finish(null);
+            openRequest.onblocked = () => finish(null);
+            openRequest.onsuccess = () => {
+                const db = openRequest.result;
+                if (!db.objectStoreNames.contains(SPICY_LYRICS_DB_STORE)) {
+                    db.close();
+                    finish(null);
+                    return;
+                }
+
+                try {
+                    const transaction = db.transaction(SPICY_LYRICS_DB_STORE, 'readonly');
+                    const request = transaction.objectStore(SPICY_LYRICS_DB_STORE).get(trackUri);
+                    request.onsuccess = () => {
+                        const value = request.result;
+                        finish(typeof value === 'string' && value.trim() ? value : null);
+                    };
+                    request.onerror = () => finish(null);
+                    transaction.oncomplete = () => db.close();
+                    transaction.onabort = () => {
+                        db.close();
+                        finish(null);
+                    };
+                    transaction.onerror = () => {
+                        db.close();
+                        finish(null);
+                    };
+                } catch {
+                    db.close();
+                    finish(null);
+                }
+            };
+        } catch {
+            finish(null);
+        }
+    });
+}
+
+function getSpicyLyricsVersionHint(): string {
+    try {
+        const metadataVersion = (globalThis as any)._spicy_lyrics_metadata?.LoadedVersion;
+        if (typeof metadataVersion === 'string' && metadataVersion) return metadataVersion;
+    } catch {}
+
+    const readUiState = (raw: string | null | undefined): string | null => {
+        if (!raw) return null;
+        try {
+            const parsed = JSON.parse(raw);
+            for (const key of ['fromVersion', 'previousVersion']) {
+                if (typeof parsed?.[key] === 'string' && parsed[key]) return parsed[key];
+            }
+        } catch {}
+        return null;
+    };
+
+    try {
+        const value = readUiState((globalThis as any).Spicetify?.LocalStorage?.get?.('SL:uiState'));
+        if (value) return value;
+    } catch {}
+    try {
+        const value = readUiState(localStorage.getItem('SL:uiState'));
+        if (value) return value;
+    } catch {}
+    return '';
+}
+
+async function parseLocalTtmlWithSpicyApi(ttml: string): Promise<LyricsData | null> {
+    try {
+        const response = await fetch(`https://${SPICY_API_HOST}${SPICY_QUERY_PATH}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'SpicyLyrics-Version': getSpicyLyricsVersionHint(),
+                'X-mode': '2',
+            },
+            body: JSON.stringify({
+                queries: [{ operation: 'parseTTML', variables: { ttml } }],
+                client: { version: getSpicyLyricsVersionHint() || 'unknown' },
+            }),
+        });
+        if (!response.ok) return null;
+        const payload = await response.json() as QueryResponse;
+        const result = payload?.queries?.find(query => String(query.operationId) === '0')?.result;
+        if (!result || result.httpStatus !== 200) return null;
+        return normalizeLocalLyricsResult(result.data);
+    } catch (err) {
+        warn('Failed to parse Local Lyrics TTML through the Spicy Lyrics API:', err);
+        return null;
+    }
+}
+
+async function getLocalLyricsData(trackUri: string): Promise<LyricsData | null> {
+    const captured = localLyricsCaptureCache.get(trackUri);
+    if (captured) return captured;
+
+    const exposed = await getLocalLyricsFromPublicApi(trackUri);
+    if (exposed) {
+        localLyricsCaptureCache.set(trackUri, exposed);
+        return exposed;
+    }
+
+    const rawTtml = await readLocalTtmlFromIndexedDb(trackUri);
+    if (!rawTtml) return null;
+
+    const parsed = await parseLocalTtmlWithSpicyApi(rawTtml);
+    if (parsed) localLyricsCaptureCache.set(trackUri, parsed);
+    return parsed;
 }
 
 function extractContentLinesData(lyrics: LyricsData): LyricLineData[] {
@@ -543,7 +762,7 @@ function extractLinesData(lyrics: LyricsData): LyricLineData[] {
     }
 }
 
-let cachedTrackId: string | null = null;
+let cachedTrackKey: string | null = null;
 let cachedLineData: LyricLineData[] | null = null;
 let cachedLanguage: string | null = null;
 
@@ -561,13 +780,13 @@ export function getCachedLineData(): LyricLineData[] | null {
     return cachedLineData;
 }
 
-function cacheParsedLyrics(trackId: string, lyrics: LyricsData): { lines: string[]; lineData: LyricLineData[]; language?: string } | null {
+function cacheParsedLyrics(trackKey: string, lyrics: LyricsData): { lines: string[]; lineData: LyricLineData[]; language?: string } | null {
     const lineData = extractLinesData(lyrics);
     if (lineData.length === 0) {
         return null;
     }
 
-    cachedTrackId = trackId;
+    cachedTrackKey = trackKey;
     cachedLineData = lineData;
     cachedLanguage = getLyricsLanguage(lyrics) || null;
 
@@ -579,12 +798,13 @@ function cacheParsedLyrics(trackId: string, lyrics: LyricsData): { lines: string
 }
 
 export async function fetchLyricsFromAPI(): Promise<{ lines: string[]; lineData: LyricLineData[]; language?: string } | null> {
+    const trackUri = getCurrentTrackUri();
     const trackId = getCurrentTrackId();
-    if (!trackId) {
+    if (!trackUri || !trackId) {
         return null;
     }
 
-    if (trackId === cachedTrackId && cachedLineData) {
+    if (trackUri === cachedTrackKey && cachedLineData) {
         return {
             lines: cachedLineData.map(l => l.text),
             lineData: cachedLineData,
@@ -593,12 +813,14 @@ export async function fetchLyricsFromAPI(): Promise<{ lines: string[]; lineData:
     }
 
     try {
-        const lyrics = await getStoredLyricsData(trackId) || await waitForCapture(trackId);
+        const lyrics = await getLocalLyricsData(trackUri) ||
+            await getStoredLyricsData(trackId) ||
+            await waitForCapture(trackId);
         if (!lyrics) {
             return null;
         }
 
-        return cacheParsedLyrics(trackId, lyrics);
+        return cacheParsedLyrics(trackUri, lyrics);
     } catch (err) {
         warn('Failed to capture lyrics from Spicy Lyrics fetch:', err);
         return null;
@@ -611,7 +833,7 @@ export async function fetchLyricsForTrackUri(trackUri: string): Promise<{ lines:
         return null;
     }
 
-    if (trackId === cachedTrackId && cachedLineData) {
+    if (trackUri === cachedTrackKey && cachedLineData) {
         return {
             lines: cachedLineData.map(l => l.text),
             lineData: cachedLineData,
@@ -620,12 +842,14 @@ export async function fetchLyricsForTrackUri(trackUri: string): Promise<{ lines:
     }
 
     try {
-        const lyrics = await getStoredLyricsData(trackId) || await waitForCapture(trackId);
+        const lyrics = await getLocalLyricsData(trackUri) ||
+            await getStoredLyricsData(trackId) ||
+            await waitForCapture(trackId);
         if (!lyrics) {
             return null;
         }
 
-        return cacheParsedLyrics(trackId, lyrics);
+        return cacheParsedLyrics(trackUri, lyrics);
     } catch (err) {
         warn('Failed to capture lyrics for track URI:', trackUri, err);
         return null;
@@ -633,10 +857,11 @@ export async function fetchLyricsForTrackUri(trackUri: string): Promise<{ lines:
 }
 
 export function clearLyricsCache(): void {
-    cachedTrackId = null;
+    cachedTrackKey = null;
     cachedLineData = null;
     cachedLanguage = null;
     captureCache.clear();
+    localLyricsCaptureCache.clear();
 }
 
 export default {

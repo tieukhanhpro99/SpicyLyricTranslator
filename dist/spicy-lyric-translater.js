@@ -4242,8 +4242,12 @@ ${text}`;
   var SPICY_API_HOST = "api.spicylyrics.org";
   var SPICY_QUERY_PATH = "/query";
   var SPICY_LYRICS_CACHE_NAMES = ["SpicyLyrics_LyricsStore_g1", "SpicyLyrics_LyricsStore"];
+  var SPICY_LYRICS_DB_NAME = "spicylyrics";
+  var SPICY_LYRICS_DB_STORE = "lyricsStore";
+  var SPICY_LYRICS_G1_CACHE_VERSION = 1;
   var MAX_CAPTURE_CACHE_ENTRIES = 50;
   var captureCache = /* @__PURE__ */ new Map();
+  var localLyricsCaptureCache = /* @__PURE__ */ new Map();
   var interceptorInstalled = false;
   function getRomanizedText(value) {
     const text = value?.TransliteratedText ?? value?.RomanizedText;
@@ -4402,22 +4406,31 @@ ${text}`;
     const unpacked = unpackSpicyLyricsPayload(data);
     return isLyricsData(unpacked) ? unpacked : null;
   }
-  function extractTrackIdFromBody(bodyText) {
+  function extractCaptureContextFromBody(bodyText) {
+    const context = {
+      trackId: null,
+      parseTtmlOperationIds: /* @__PURE__ */ new Set()
+    };
     if (!bodyText)
-      return null;
+      return context;
     try {
       const parsed = JSON.parse(bodyText);
       const queries = parsed?.queries;
       if (!Array.isArray(queries))
-        return null;
-      for (const q of queries) {
-        const id = q?.variables?.id;
-        if (typeof id === "string" && id.length > 0)
-          return id;
+        return context;
+      for (let i = 0; i < queries.length; i++) {
+        const query = queries[i];
+        if (query?.operation === "lyrics") {
+          const id = query?.variables?.id;
+          if (typeof id === "string" && id.length > 0)
+            context.trackId = id;
+        } else if (query?.operation === "parseTTML") {
+          context.parseTtmlOperationIds.add(String(i));
+        }
       }
     } catch {
     }
-    return null;
+    return context;
   }
   function processCapturedResponse(trackId, payload) {
     const queries = Array.isArray(payload?.queries) ? payload.queries : [];
@@ -4428,6 +4441,24 @@ ${text}`;
       const lyricsData = normalizeCapturedLyricsData(result.data);
       if (lyricsData) {
         setCaptureCache(trackId, lyricsData);
+        return;
+      }
+    }
+  }
+  function processCapturedLocalLyrics(trackUri, operationIds, payload) {
+    if (!trackUri || operationIds.size === 0)
+      return;
+    const queries = Array.isArray(payload?.queries) ? payload.queries : [];
+    for (const query of queries) {
+      if (!operationIds.has(String(query?.operationId)))
+        continue;
+      const result = query?.result;
+      if (!result || result.httpStatus !== 200)
+        continue;
+      const data = result.data?.Result ?? result.data?.result ?? result.data;
+      const lyricsData = normalizeCapturedLyricsData(data);
+      if (lyricsData) {
+        localLyricsCaptureCache.set(trackUri, lyricsData);
         return;
       }
     }
@@ -4451,6 +4482,9 @@ ${text}`;
           return item;
         }
         if (!item || typeof item !== "object" || item.Value === "NO_LYRICS") {
+          continue;
+        }
+        if (cacheName === "SpicyLyrics_LyricsStore_g1" && typeof item.CacheVersion === "number" && item.CacheVersion !== SPICY_LYRICS_G1_CACHE_VERSION) {
           continue;
         }
         if (typeof item.ExpiresAt === "number" && item.ExpiresAt < Date.now()) {
@@ -4503,22 +4537,29 @@ ${text}`;
       if (!url.includes(SPICY_API_HOST) || !url.includes(SPICY_QUERY_PATH)) {
         return origFetch(input, init);
       }
-      let trackId = null;
+      let captureContext = {
+        trackId: null,
+        parseTtmlOperationIds: /* @__PURE__ */ new Set()
+      };
       try {
         if (typeof init?.body === "string") {
-          trackId = extractTrackIdFromBody(init.body);
+          captureContext = extractCaptureContextFromBody(init.body);
         } else if (input instanceof Request) {
           const cloned = input.clone();
           const bodyText = await cloned.text();
-          trackId = extractTrackIdFromBody(bodyText);
+          captureContext = extractCaptureContextFromBody(bodyText);
         }
       } catch {
       }
+      const localTrackUri = captureContext.parseTtmlOperationIds.size > 0 ? getCurrentTrackUri2() : null;
       const response = await origFetch(input, init);
-      if (trackId) {
-        const capturedTrackId = trackId;
+      if (captureContext.trackId || captureContext.parseTtmlOperationIds.size > 0) {
+        const capturedTrackId = captureContext.trackId;
+        const parseTtmlOperationIds = captureContext.parseTtmlOperationIds;
         response.clone().json().then((data) => {
-          processCapturedResponse(capturedTrackId, data);
+          if (capturedTrackId)
+            processCapturedResponse(capturedTrackId, data);
+          processCapturedLocalLyrics(localTrackUri, parseTtmlOperationIds, data);
         }).catch(() => {
         });
       }
@@ -4544,12 +4585,18 @@ ${text}`;
     return getStoredLyricsData(trackId);
   }
   function getCurrentTrackId() {
+    const uri = getCurrentTrackUri2();
+    if (uri) {
+      const parts = uri.split(":");
+      return parts[parts.length - 1] || null;
+    }
+    return null;
+  }
+  function getCurrentTrackUri2() {
     try {
       const uri = globalThis.Spicetify?.Player?.data?.item?.uri;
-      if (uri && typeof uri === "string") {
-        const parts = uri.split(":");
-        return parts[parts.length - 1] || null;
-      }
+      if (uri && typeof uri === "string")
+        return uri;
     } catch (e) {
     }
     return null;
@@ -4560,6 +4607,158 @@ ${text}`;
     }
     const parts = trackUri.split(":");
     return parts[parts.length - 1] || null;
+  }
+  function normalizeLocalLyricsResult(value) {
+    if (!value || typeof value !== "object")
+      return normalizeCapturedLyricsData(value);
+    const record = value;
+    return normalizeCapturedLyricsData(record.Result ?? record.result ?? value);
+  }
+  async function getLocalLyricsFromPublicApi(trackUri) {
+    try {
+      const root = globalThis.SpicyLyrics ?? (typeof window !== "undefined" ? window.SpicyLyrics : void 0);
+      const manager = root?.db?.objectStores?.lyricsStore?.manager;
+      if (typeof manager?.get !== "function")
+        return null;
+      return normalizeLocalLyricsResult(await manager.get(trackUri));
+    } catch (err) {
+      warn("Failed to read Local Lyrics through the Spicy Lyrics API:", err);
+      return null;
+    }
+  }
+  function readLocalTtmlFromIndexedDb(trackUri) {
+    if (typeof indexedDB === "undefined" || typeof indexedDB.open !== "function") {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled)
+          return;
+        settled = true;
+        resolve(value);
+      };
+      try {
+        const openRequest = indexedDB.open(SPICY_LYRICS_DB_NAME);
+        openRequest.onupgradeneeded = () => {
+          try {
+            openRequest.transaction?.abort();
+          } catch {
+          }
+          finish(null);
+        };
+        openRequest.onerror = () => finish(null);
+        openRequest.onblocked = () => finish(null);
+        openRequest.onsuccess = () => {
+          const db = openRequest.result;
+          if (!db.objectStoreNames.contains(SPICY_LYRICS_DB_STORE)) {
+            db.close();
+            finish(null);
+            return;
+          }
+          try {
+            const transaction = db.transaction(SPICY_LYRICS_DB_STORE, "readonly");
+            const request = transaction.objectStore(SPICY_LYRICS_DB_STORE).get(trackUri);
+            request.onsuccess = () => {
+              const value = request.result;
+              finish(typeof value === "string" && value.trim() ? value : null);
+            };
+            request.onerror = () => finish(null);
+            transaction.oncomplete = () => db.close();
+            transaction.onabort = () => {
+              db.close();
+              finish(null);
+            };
+            transaction.onerror = () => {
+              db.close();
+              finish(null);
+            };
+          } catch {
+            db.close();
+            finish(null);
+          }
+        };
+      } catch {
+        finish(null);
+      }
+    });
+  }
+  function getSpicyLyricsVersionHint() {
+    try {
+      const metadataVersion = globalThis._spicy_lyrics_metadata?.LoadedVersion;
+      if (typeof metadataVersion === "string" && metadataVersion)
+        return metadataVersion;
+    } catch {
+    }
+    const readUiState = (raw) => {
+      if (!raw)
+        return null;
+      try {
+        const parsed = JSON.parse(raw);
+        for (const key of ["fromVersion", "previousVersion"]) {
+          if (typeof parsed?.[key] === "string" && parsed[key])
+            return parsed[key];
+        }
+      } catch {
+      }
+      return null;
+    };
+    try {
+      const value = readUiState(globalThis.Spicetify?.LocalStorage?.get?.("SL:uiState"));
+      if (value)
+        return value;
+    } catch {
+    }
+    try {
+      const value = readUiState(localStorage.getItem("SL:uiState"));
+      if (value)
+        return value;
+    } catch {
+    }
+    return "";
+  }
+  async function parseLocalTtmlWithSpicyApi(ttml) {
+    try {
+      const response = await fetch(`https://${SPICY_API_HOST}${SPICY_QUERY_PATH}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "SpicyLyrics-Version": getSpicyLyricsVersionHint(),
+          "X-mode": "2"
+        },
+        body: JSON.stringify({
+          queries: [{ operation: "parseTTML", variables: { ttml } }],
+          client: { version: getSpicyLyricsVersionHint() || "unknown" }
+        })
+      });
+      if (!response.ok)
+        return null;
+      const payload = await response.json();
+      const result = payload?.queries?.find((query) => String(query.operationId) === "0")?.result;
+      if (!result || result.httpStatus !== 200)
+        return null;
+      return normalizeLocalLyricsResult(result.data);
+    } catch (err) {
+      warn("Failed to parse Local Lyrics TTML through the Spicy Lyrics API:", err);
+      return null;
+    }
+  }
+  async function getLocalLyricsData(trackUri) {
+    const captured = localLyricsCaptureCache.get(trackUri);
+    if (captured)
+      return captured;
+    const exposed = await getLocalLyricsFromPublicApi(trackUri);
+    if (exposed) {
+      localLyricsCaptureCache.set(trackUri, exposed);
+      return exposed;
+    }
+    const rawTtml = await readLocalTtmlFromIndexedDb(trackUri);
+    if (!rawTtml)
+      return null;
+    const parsed = await parseLocalTtmlWithSpicyApi(rawTtml);
+    if (parsed)
+      localLyricsCaptureCache.set(trackUri, parsed);
+    return parsed;
   }
   function extractContentLinesData(lyrics) {
     const lineData = [];
@@ -4669,7 +4868,7 @@ ${text}`;
         return [];
     }
   }
-  var cachedTrackId = null;
+  var cachedTrackKey = null;
   var cachedLineData = null;
   var cachedLanguage = null;
   function getLyricsLanguage(lyrics) {
@@ -4681,12 +4880,12 @@ ${text}`;
       return language;
     return void 0;
   }
-  function cacheParsedLyrics(trackId, lyrics) {
+  function cacheParsedLyrics(trackKey, lyrics) {
     const lineData = extractLinesData(lyrics);
     if (lineData.length === 0) {
       return null;
     }
-    cachedTrackId = trackId;
+    cachedTrackKey = trackKey;
     cachedLineData = lineData;
     cachedLanguage = getLyricsLanguage(lyrics) || null;
     return {
@@ -4696,11 +4895,12 @@ ${text}`;
     };
   }
   async function fetchLyricsFromAPI() {
+    const trackUri = getCurrentTrackUri2();
     const trackId = getCurrentTrackId();
-    if (!trackId) {
+    if (!trackUri || !trackId) {
       return null;
     }
-    if (trackId === cachedTrackId && cachedLineData) {
+    if (trackUri === cachedTrackKey && cachedLineData) {
       return {
         lines: cachedLineData.map((l) => l.text),
         lineData: cachedLineData,
@@ -4708,11 +4908,11 @@ ${text}`;
       };
     }
     try {
-      const lyrics = await getStoredLyricsData(trackId) || await waitForCapture(trackId);
+      const lyrics = await getLocalLyricsData(trackUri) || await getStoredLyricsData(trackId) || await waitForCapture(trackId);
       if (!lyrics) {
         return null;
       }
-      return cacheParsedLyrics(trackId, lyrics);
+      return cacheParsedLyrics(trackUri, lyrics);
     } catch (err) {
       warn("Failed to capture lyrics from Spicy Lyrics fetch:", err);
       return null;
@@ -4723,7 +4923,7 @@ ${text}`;
     if (!trackId) {
       return null;
     }
-    if (trackId === cachedTrackId && cachedLineData) {
+    if (trackUri === cachedTrackKey && cachedLineData) {
       return {
         lines: cachedLineData.map((l) => l.text),
         lineData: cachedLineData,
@@ -4731,21 +4931,22 @@ ${text}`;
       };
     }
     try {
-      const lyrics = await getStoredLyricsData(trackId) || await waitForCapture(trackId);
+      const lyrics = await getLocalLyricsData(trackUri) || await getStoredLyricsData(trackId) || await waitForCapture(trackId);
       if (!lyrics) {
         return null;
       }
-      return cacheParsedLyrics(trackId, lyrics);
+      return cacheParsedLyrics(trackUri, lyrics);
     } catch (err) {
       warn("Failed to capture lyrics for track URI:", trackUri, err);
       return null;
     }
   }
   function clearLyricsCache() {
-    cachedTrackId = null;
+    cachedTrackKey = null;
     cachedLineData = null;
     cachedLanguage = null;
     captureCache.clear();
+    localLyricsCaptureCache.clear();
   }
 
   // src/utils/japaneseRomanization.ts
@@ -10225,14 +10426,29 @@ body.SpicySidebarLyrics__Active .slt-qi-dot,
       warn("Failed to delete current Spicy Lyrics cache entry:", e);
     }
   }
-  function refreshSpicyLyricsCurrentTrack() {
+  function getSpicyLyricsRefreshCurrentTrack() {
     try {
+      const publicApi = globalThis.SpicyLyrics;
+      const publicRefresh = publicApi?.lyrics?.refreshCurrent ?? publicApi?.lyrics?.refresh;
+      if (typeof publicRefresh === "function") {
+        return () => publicRefresh.call(publicApi.lyrics);
+      }
       const spicyScope = globalThis._spicy_lyrics;
       const execute = spicyScope?.execute;
       if (typeof execute === "function") {
-        execute("reset-ttml");
-        return true;
+        return () => execute("reset-ttml");
       }
+    } catch (e) {
+      warn("Failed to resolve Spicy Lyrics refresh hook:", e);
+    }
+    return null;
+  }
+  function refreshSpicyLyricsCurrentTrack(refresh = getSpicyLyricsRefreshCurrentTrack()) {
+    if (!refresh)
+      return false;
+    try {
+      refresh();
+      return true;
     } catch (e) {
       warn("Failed to trigger Spicy Lyrics refresh:", e);
     }
@@ -10248,9 +10464,11 @@ body.SpicySidebarLyrics__Active .slt-qi-dot,
     if (!result || !needsRomanizationCacheRepair(result.lines, result.lineData))
       return false;
     romanizationRepairAttempts.add(currentTrackUri);
-    clearLyricsCache();
+    const refreshCurrentTrack = getSpicyLyricsRefreshCurrentTrack();
+    if (refreshCurrentTrack)
+      clearLyricsCache();
     await deleteCurrentSpicyLyricsCacheEntry(currentTrackUri);
-    const refreshed = refreshSpicyLyricsCurrentTrack();
+    const refreshed = refreshSpicyLyricsCurrentTrack(refreshCurrentTrack);
     if (state.showNotifications && Spicetify.showNotification) {
       Spicetify.showNotification(
         refreshed ? "Repairing Spicy Lyrics romanization cache..." : "Spicy Lyrics cache cleared \u2014 switch songs or reload to re-fetch lyrics"

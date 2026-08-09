@@ -14,7 +14,7 @@ const trackUri = `spotify:track:${trackId}`;
     }
 };
 
-function installSpicyLyricsCache(content: any, cacheVersion = 12): void {
+function installSpicyLyricsCache(content: any, cacheVersion = 1): void {
     (globalThis as any).caches = {
         has: async (name: string) => name === 'SpicyLyrics_LyricsStore_g1',
         open: async (name: string) => {
@@ -133,7 +133,7 @@ test('preserves static romanized text from Spicy Lyrics cache', async () => {
     assert.equal(result?.lineData[0]?.romanizedText, 'kimi wa sekai');
 });
 
-test('reads Spicy Lyrics 6 transliterated syllable fields from cache version 13', async () => {
+test('reads Spicy Lyrics 6.3 transliterated syllable fields from g1 cache version 1', async () => {
     clearLyricsCache();
     installSpicyLyricsCache({
         id: trackId,
@@ -164,7 +164,7 @@ test('reads Spicy Lyrics 6 transliterated syllable fields from cache version 13'
                 }
             }
         ]
-    }, 13);
+    }, 1);
 
     const result = await fetchLyricsForTrackUri(trackUri);
 
@@ -172,7 +172,7 @@ test('reads Spicy Lyrics 6 transliterated syllable fields from cache version 13'
     assert.equal(result?.lineData[0]?.romanizedText, 'kyou wa');
 });
 
-test('reads Spicy Lyrics 6 transliterated line fields from cache version 13', async () => {
+test('reads Spicy Lyrics 6.3 transliterated line fields from g1 cache version 1', async () => {
     clearLyricsCache();
     installSpicyLyricsCache({
         id: trackId,
@@ -187,7 +187,7 @@ test('reads Spicy Lyrics 6 transliterated line fields from cache version 13', as
                 EndTime: 1000
             }
         ]
-    }, 13);
+    }, 1);
 
     const result = await fetchLyricsForTrackUri(trackUri);
 

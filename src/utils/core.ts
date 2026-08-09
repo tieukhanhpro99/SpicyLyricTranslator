@@ -742,18 +742,34 @@ async function deleteCurrentSpicyLyricsCacheEntry(trackUri: string): Promise<voi
     }
 }
 
-function refreshSpicyLyricsCurrentTrack(): boolean {
+function getSpicyLyricsRefreshCurrentTrack(): (() => void) | null {
     try {
         // Spicy Lyrics ≤5.x exposed a global `execute('reset-ttml')` command
         // (via GlobalExecute.ts) to purge the in-memory lyric state and
-        // re-apply fresh data. Spicy Lyrics 6.x removed it — only invoke the
-        // hook when it actually exists so we never crash on newer versions.
+        // re-apply fresh data. Spicy Lyrics 6.x removed it. Prefer a future
+        // public refresh hook when present, while retaining the legacy bridge.
+        const publicApi = (globalThis as any).SpicyLyrics;
+        const publicRefresh = publicApi?.lyrics?.refreshCurrent ?? publicApi?.lyrics?.refresh;
+        if (typeof publicRefresh === 'function') {
+            return () => publicRefresh.call(publicApi.lyrics);
+        }
+
         const spicyScope = (globalThis as any)._spicy_lyrics;
         const execute = spicyScope?.execute;
         if (typeof execute === 'function') {
-            execute('reset-ttml');
-            return true;
+            return () => execute('reset-ttml');
         }
+    } catch (e) {
+        warn('Failed to resolve Spicy Lyrics refresh hook:', e);
+    }
+    return null;
+}
+
+function refreshSpicyLyricsCurrentTrack(refresh: (() => void) | null = getSpicyLyricsRefreshCurrentTrack()): boolean {
+    if (!refresh) return false;
+    try {
+        refresh();
+        return true;
     } catch (e) {
         warn('Failed to trigger Spicy Lyrics refresh:', e);
     }
@@ -770,10 +786,17 @@ async function repairMissingRomanizationCacheIfNeeded(): Promise<boolean> {
     if (!result || !needsRomanizationCacheRepair(result.lines, result.lineData)) return false;
 
     romanizationRepairAttempts.add(currentTrackUri);
-    clearLyricsCache();
+    const refreshCurrentTrack = getSpicyLyricsRefreshCurrentTrack();
+
+    // When Spicy Lyrics can re-fetch immediately, discard our captured copy so
+    // the refreshed payload replaces it. On 6.3.x there is no production refresh
+    // hook; preserve the complete original source in Translator memory so the
+    // current translation can still proceed while Spicy Lyrics rebuilds its own
+    // romanization after a song switch/reload.
+    if (refreshCurrentTrack) clearLyricsCache();
     await deleteCurrentSpicyLyricsCacheEntry(currentTrackUri);
 
-    const refreshed = refreshSpicyLyricsCurrentTrack();
+    const refreshed = refreshSpicyLyricsCurrentTrack(refreshCurrentTrack);
     if (state.showNotifications && Spicetify.showNotification) {
         // On Spicy Lyrics 6.x the `reset-ttml` hook no longer exists, so a
         // fully automatic re-fetch isn't possible — tell the user what's
